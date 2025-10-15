@@ -1,0 +1,112 @@
+// Author: Nestor Cirhuza Muderhwa
+// Contact: mcnesta@gmail.com
+// Date: October 15, 2025
+// Description: This Power Query M script scrapes active job postings from the official website
+// of the Office National de l'Emploi (ONEM) in the DR Congo. It handles pagination,
+// extracts details from each job's individual page, and cleans the final data.
+
+let
+    // 1. Configuration & Initial Setup
+    BaseUrl = "https://www.onem.cd",
+    OffersPath = "/demandeurs-demploi/offres-demploi/",
+    DetailsPath = "/demandeurs-demploi/offres-demploi/details-offre-demploi",
+
+    // 2. Function to Get Job Details from a Specific Offer Page
+    GetJobDetails = (offerID as text) as record =>
+    let
+        Result = try
+            let
+                Source = Web.Contents(BaseUrl, [
+                    RelativePath = DetailsPath,
+                    Headers = [#"Content-Type" = "application/x-www-form-urlencoded"],
+                    Content = Text.ToBinary("offreid=" & offerID)
+                ]),
+                
+                KeyValueTable = Html.Table(Source, {
+                    {"Label", "div:nth-child(1)"},
+                    {"Value", "div:nth-child(2)"}
+                }, [RowSelector="#offredetails .form-group.row"]),
+
+                CleanedLabels = Table.TransformColumns(KeyValueTable, {{"Label", each Text.Clean(Text.Trim(Text.Replace(_, ":", ""))), type text}}),
+                
+                // *** FINAL, UNIVERSAL FIX FOR MISSION DETAILS ***
+                // 1. Create a table from EVERY child element (*) inside the mission container.
+                AllChildElementsTable = try Html.Table(Source, {{"Line", "*"}}, [RowSelector=".col-sm-12[style*='pre-line']"]) otherwise #table({"Line"}, {}),
+                // 2. Filter out any rows that are blank or just contain whitespace.
+                NonBlankLines = Table.SelectRows(AllChildElementsTable, each Text.Trim([Line]) <> ""),
+                // 3. Combine the remaining lines into a single text value with a new line separator.
+                MissionDetails = Text.Combine(NonBlankLines[Line], "#(lf)"),
+
+                OutputRecord = [
+                    Classification = List.First(Table.SelectRows(CleanedLabels, each Text.Contains([Label], "Classification"))[Value], null),
+                    Localisation = List.First(Table.SelectRows(CleanedLabels, each Text.Contains([Label], "Localisation"))[Value], null),
+                    #"Nombre de postes" = List.First(Table.SelectRows(CleanedLabels, each Text.Contains([Label], "Nombre de postes"))[Value], null),
+                    #"Date contrat" = List.First(Table.SelectRows(CleanedLabels, each Text.Contains([Label], "Date contrat"))[Value], null),
+                    #"Détails de la Mission" = MissionDetails
+                ]
+            in
+                OutputRecord
+        otherwise
+            [Classification = null, Localisation = null, #"Nombre de postes" = null, #"Date contrat" = null, #"Détails de la Mission" = null]
+    in
+        Result,
+
+    // 3. Determine Total Pages
+    GetFirstPageHtml = Web.Contents(BaseUrl, [RelativePath = OffersPath]),
+    PaginationButtonsTable = Html.Table(GetFirstPageHtml, {{"ButtonText", "button"}}, [RowSelector=".pagination form button"]),
+    PaginationButtonList = PaginationButtonsTable[ButtonText],
+    NumbersList = List.Transform(PaginationButtonList, each try Number.FromText(_) otherwise null),
+    FilteredNumbers = List.RemoveNulls(NumbersList),
+    TotalPages = if List.IsEmpty(FilteredNumbers) then 1 else List.Max(FilteredNumbers),
+
+    // 4. Function to Scrape a Single Page of Job Listings
+    ScrapePage = (pageNumber as number) as table =>
+    let
+        Source = Web.Contents(BaseUrl, [
+            RelativePath = OffersPath,
+            Headers = [#"Content-Type" = "application/x-www-form-urlencoded"],
+            Content = Text.ToBinary("page=" & Number.ToText(pageNumber))
+        ]),
+        ExtractedData = Html.Table(Source, {
+            {"Company", ".text-primary.mb-2"},
+            {"Job Title", "button.h4"},
+            {"DeadlineText", "p span:nth-child(3)"},
+            {"OfferNumberText", "p:nth-of-type(2)"},
+            {"OfferID", "input[name='offreid']", each [Attributes][value]} 
+        }, [RowSelector = ".col-md-6 .blog-item"])
+    in
+        ExtractedData,
+
+    // 5. Scrape All Listing Pages
+    PageList = {1..TotalPages},
+    ScrapedTables = List.Transform(PageList, each ScrapePage(_)),
+    CombinedTable = Table.Combine(ScrapedTables),
+
+    // 6. Get Details for Each Job
+    AddDetailsColumn = Table.AddColumn(CombinedTable, "Details", each GetJobDetails([OfferID]), type record),
+    ExpandedDetails = Table.ExpandRecordColumn(AddDetailsColumn, "Details", 
+        {"Classification", "Localisation", "Nombre de postes", "Date contrat", "Détails de la Mission"},
+        {"Classification", "Localisation", "Nombre de postes", "Date contrat", "Détails de la Mission"}),
+
+    // 7. Clean and Finalize the Combined Table
+    CleanedTable = Table.TransformColumns(ExpandedDetails, {
+        {"Company", each Text.Trim(_), type text},
+        {"Job Title", each Text.Trim(_), type text},
+        {"OfferNumberText", each Text.Trim(List.Last(Text.Split(Text.Trim(_), "#(cr)#(lf)"))), type text},
+        {"Détails de la Mission", each Text.Trim(Text.Replace(_, "#(00A0)", " ")), type text}
+    }),
+    
+    ParsedDates = Table.AddColumn(CleanedTable, "Deadline", each try Date.FromText([DeadlineText], "fr-FR") otherwise null, type date),
+    
+    AddStatusColumn = Table.AddColumn(ParsedDates, "Status", each 
+        if [Deadline] = null then "Invalid Date"
+        else if [Deadline] < Date.From(DateTime.LocalNow()) then "Expired" 
+        else "Active", type text),
+        
+    FinalTable = Table.SelectColumns(AddStatusColumn, {"Company", "Job Title", "Deadline", "Status", "OfferNumberText", "Classification", "Localisation", "Nombre de postes", "Date contrat", "Détails de la Mission"}),
+    RenamedColumns = Table.RenameColumns(FinalTable, {"OfferNumberText", "Offer Number"}),
+
+    // 8. Filter for Active Jobs Only
+    ActiveOnly = Table.SelectRows(RenamedColumns, each ([Status] = "Active"))
+in
+    ActiveOnly
