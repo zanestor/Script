@@ -1,0 +1,156 @@
+// Author: Nestor Cirhuza Muderhwa
+// Contact: mcnesta@gmail.com
+// Date: October 15, 2025
+// Description: This Power Query M script scrapes active job postings from the official website
+// of the Office National de l'Emploi (ONEM) in the DR Congo. It handles pagination,
+// extracts details from each job's individual page, and cleans the final data.
+let
+  // --- Create a Function to Scrape and Clean Data from a Single Page ---
+  fnGetPageData = (PageURL as text) =>
+    let
+      Source = Web.BrowserContents(PageURL), 
+      // 1. Extract all data fields, including the new JobID
+      Extracted_Table = Html.Table(
+        Source, 
+        {
+          {
+            "Classification_Class", 
+            "TABLE.table_datas > * > TR > :nth-child(1)", 
+            each try _[Attributes][class] otherwise null
+          }, 
+          {"Fonction", "TABLE.table_datas > * > TR > :nth-child(2)"}, 
+          {"JobID", "strong.format_id_emploi"}, 
+          {
+            "Relative_URL", 
+            "TABLE.table_datas > * > TR > :nth-child(2) a", 
+            each try _[Attributes][href] otherwise null
+          }, 
+          {"Organisme", "TABLE.table_datas > * > TR > :nth-child(3)"}, 
+          {"Lieu", "TABLE.table_datas > * > TR > :nth-child(4)"}, 
+          {"Insérée", "TABLE.table_datas > * > TR > :nth-child(5)"}, 
+          {"Column6_Remove", "TABLE.table_datas > * > TR > :nth-child(6)"}
+        }, 
+        [RowSelector = "TABLE.table_datas > * > TR"]
+      ), 
+      // 2. Clean up the extracted table (filters header row and any row without a JobID)
+      Removed_Empty_Column = Table.RemoveColumns(Extracted_Table, {"Column6_Remove"}), 
+      Filtered_Header_Row = Table.SelectRows(
+        Removed_Empty_Column, 
+        each [Fonction]
+          <> "Fonction"
+          and [Classification_Class] <> null
+          and [JobID] <> null
+          and [JobID] <> ""
+      ), 
+      // 3. CORRECTED: Clean the "Fonction" column by removing the JobID
+      Added_Clean_Fonction = Table.AddColumn(
+        Filtered_Header_Row, 
+        "Fonction_Clean", 
+        (row) => Text.Trim(Text.Replace(row[Fonction], row[JobID], "")), 
+        type text
+      ), 
+      Removed_Old_Fonction = Table.RemoveColumns(Added_Clean_Fonction, {"Fonction"}), 
+      Renamed_Fonction = Table.RenameColumns(Removed_Old_Fonction, {{"Fonction_Clean", "Fonction"}}), 
+      // 4. Create the full, absolute URL
+      Added_Full_URL = Table.AddColumn(
+        Renamed_Fonction, 
+        "URL", 
+        each "https://www.mediacongo.net/" & [Relative_URL], 
+        type text
+      ), 
+      Removed_Relative_URL_Column = Table.RemoveColumns(Added_Full_URL, {"Relative_URL"}), 
+      // 5. Process the Classification Column to get the desired text
+      Extracted_Class_Name = Table.TransformColumns(
+        Removed_Relative_URL_Column, 
+        {
+          {
+            "Classification_Class", 
+            each 
+              let
+                parts = Text.Split(_, " ")
+              in
+                List.Last(parts), 
+            type text
+          }
+        }
+      ), 
+      Replaced_Classification_Text = Table.ReplaceValue(
+        Extracted_Class_Name, 
+        each [Classification_Class], 
+        each 
+          if [Classification_Class] = "clas1" then
+            "En cours"
+          else if [Classification_Class] = "clas2" then
+            "Moins de 3 jours"
+          else if [Classification_Class] = "clas3" then
+            "Expirée"
+          else if [Classification_Class] = "clas4" then
+            "Non précisé"
+          else
+            [Classification_Class], 
+        Replacer.ReplaceText, 
+        {"Classification_Class"}
+      ), 
+      // 6. Final step: rename classification and re-order columns for a clean output
+      Renamed_Classification_Column = Table.RenameColumns(
+        Replaced_Classification_Text, 
+        {{"Classification_Class", "Classification"}}
+      ), 
+      Reordered_Columns = Table.SelectColumns(
+        Renamed_Classification_Column, 
+        {"Classification", "Fonction", "JobID", "Organisme", "Lieu", "Insérée", "URL"}
+      )
+    in
+      Reordered_Columns, 
+  // --- Dynamic Pagination Logic ---
+  // 1. Define the URL for Page 1
+  BaseURL = "https://www.mediacongo.net/emplois.html", 
+  // 2. Load Page 1 to find the total page count
+  FirstPageSource = Web.BrowserContents(BaseURL), 
+  // 3. Extract all page number links from the pagination section
+  PaginationNodes = Html.Table(
+    FirstPageSource, 
+    {{"PageNumber", "div.pagination div.nav a.navpage"}}, 
+    [RowSelector = "div.pagination div.nav a.navpage"]
+  ), 
+  // 4. Get the last page number (and handle if only 1 page exists)
+  LastPageNumberText = try List.Last(PaginationNodes[PageNumber]) otherwise "1", 
+  TotalPages = Number.FromText(LastPageNumberText), 
+  // 5. Generate the list of all page numbers from 1 to TotalPages
+  PageList = List.Numbers(1, TotalPages), 
+  // 6. Transform the list of numbers into a complete list of URLs
+  PageURLs = List.Transform(
+    PageList, 
+    each 
+      if _ = 1 then
+        BaseURL
+      else
+        "https://www.mediacongo.net/emplois-search--tri-offres_recentes-page-"
+          & Number.ToText(_)
+          & ".html"
+  ), 
+  // --- Run the Function for Each Page and Combine ---
+  Converted_to_Table = Table.FromList(
+    PageURLs, 
+    Splitter.SplitByNothing(), 
+    null, 
+    null, 
+    ExtraValues.Error
+  ), 
+  Renamed_to_URL = Table.RenameColumns(Converted_to_Table, {{"Column1", "URL"}}), 
+  Invoked_Custom_Function = Table.AddColumn(Renamed_to_URL, "PageData", each fnGetPageData([URL])), 
+  Removed_URL_Column = Table.RemoveColumns(Invoked_Custom_Function, {"URL"}), 
+  // --- MODIFIED: Get Column Names Dynamically ---
+  // Get column names from the *first* nested table to use in the expansion
+  // Use 'try' in case the table list is empty
+  ColumnNamesToExpand = try Table.ColumnNames(Removed_URL_Column[PageData]{0}) otherwise {}, 
+  // --- Expand results from all pages into one final table ---
+  Expanded_PageData = Table.ExpandTableColumn(
+    Removed_URL_Column, 
+    "PageData", 
+    ColumnNamesToExpand, 
+    ColumnNamesToExpand
+  ), 
+  ActiveJobsOnly = Table.SelectRows(Expanded_PageData, each ([Classification] <> "Expirée"))
+in
+  ActiveJobsOnly
