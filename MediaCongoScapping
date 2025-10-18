@@ -1,8 +1,8 @@
 // Author: Nestor Cirhuza Muderhwa
 // Contact: mcnesta@gmail.com
-// Date: October 15, 2025
-// Description: This Power Query M script scrapes active job postings from the official website
-// of the Office National de l'Emploi (ONEM) in the DR Congo. It handles pagination,
+// Date: October 18, 2025
+// Description: This Power Query M script scrapes active job postings from the MediaCongo website
+// It handles pagination,
 // extracts details from each job's individual page, and cleans the final data.
 let
   // --- Create a Function to Scrape and Clean Data from a Single Page ---
