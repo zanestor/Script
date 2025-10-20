@@ -1,0 +1,364 @@
+import os
+import asyncio
+import aiohttp
+import httpx
+import base64
+import pandas as pd
+from bs4 import BeautifulSoup
+from datetime import date, timedelta, datetime
+from tqdm.asyncio import tqdm_asyncio
+from pathlib import Path
+from msal import ConfidentialClientApplication
+from playwright.async_api import async_playwright
+import re
+
+# ========== LOAD FROM ENVIRONMENT VARIABLES ==========
+
+CLIENT_ID = os.getenv("CLIENT_ID")
+CLIENT_SECRET = os.getenv("CLIENT_SECRET")
+TENANT_ID = os.getenv("TENANT_ID")
+EMAIL_FROM = os.getenv("EMAIL_FROM")
+EMAIL_TO = os.getenv("EMAIL_TO", "").split(",")
+EMAIL_CC = os.getenv("EMAIL_CC", "").split(",")
+EMAIL_BCC = os.getenv("EMAIL_BCC", "").split(",")
+
+# ========== STATIC CONFIGURATION ==========
+
+SEND_EMAIL = False  # Set to True to enable email sending
+START_DATE = date(2025, 1, 1)
+
+OUTPUT_CSV_FILE = r"C:\OD\Rikolto International s.o.n\Rikolto in East Africa - Documents\East Africa operations\Finance\Finance Reporting Pack\DRCongo\2025\bcc_exchange_rates.csv"
+SCREENSHOT_FOLDER = os.path.join(os.path.dirname(OUTPUT_CSV_FILE), "screenshots")
+BCC_BASE_URL = "https://www.bcc.cd/operations-et-marches/domaine-operationnel/operations-de-change/cours-de-change/"
+
+# ========== AUTHENTICATION ==========
+
+def acquire_token():
+    if not all([CLIENT_ID, CLIENT_SECRET, TENANT_ID, EMAIL_FROM]):
+        raise RuntimeError("Missing env vars: CLIENT_ID, CLIENT_SECRET, TENANT_ID, or EMAIL_FROM.")
+
+    authority = f"https://login.microsoftonline.com/{TENANT_ID}"
+    app = ConfidentialClientApplication(
+        client_id=CLIENT_ID,
+        client_credential=CLIENT_SECRET,
+        authority=authority
+    )
+    result = app.acquire_token_for_client(scopes=["https://graph.microsoft.com/.default"])
+
+    if "access_token" in result:
+        print("✅ Token acquired via client credentials.\n")
+        return result["access_token"]
+    else:
+        raise RuntimeError(f"❌ Auth failure:\n{result}")
+
+# ========== DATE UTILITIES ==========
+
+def parse_scrapedate_column(df):
+    """Convert ScrapeDate from dd/mm/yyyy strings to datetime objects."""
+    df["ScrapeDate"] = pd.to_datetime(df["ScrapeDate"], format="%d/%m/%Y", errors="coerce")
+    return df
+
+def format_scrapedate_column(df):
+    """Convert ScrapeDate datetime to dd/mm/yyyy string format for CSV storage."""
+    df["ScrapeDate"] = df["ScrapeDate"].dt.strftime("%d/%m/%Y")
+    return df
+
+# ========== BCC SCRAPING LOGIC ==========
+
+def generate_urls(start_date: date, existing_dates: set):
+    urls = []
+    current = start_date
+    while current <= date.today():
+        if current not in existing_dates:
+            code = current.strftime("%d%m%Y")
+            urls.append((current, f"{BCC_BASE_URL}{code}"))
+        current += timedelta(days=1)
+    return urls
+
+async def take_screenshot(playwright, url: str, screenshot_path: str):
+    try:
+        browser = await playwright.chromium.launch()
+        context = await browser.new_context()
+        page = await context.new_page()
+        await page.goto(url, timeout=120000)
+        await asyncio.sleep(2)
+        await page.screenshot(path=screenshot_path, full_page=True)
+        await browser.close()
+    except Exception as e:
+        print(f"❌ Screenshot error: {e}")
+
+async def fetch_single_page(client, url_date, url, semaphore, playwright, max_retries=3):
+    async with semaphore:
+        for attempt in range(1, max_retries + 1):
+            try:
+                response = await client.get(url, headers={"User-Agent": "Python"}, timeout=15)
+                if response.status_code == 404:
+                    print(f"❌ 404 Not Found for {url}. Skipping retries.")
+                    return []
+                response.raise_for_status()
+                break  # Success, exit retry loop
+            except Exception as e:
+                if isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 404:
+                    print(f"❌ 404 Not Found for {url}. Skipping retries.")
+                    return []
+                print(f"Attempt {attempt} failed for {url}: {e}")
+                if attempt == max_retries:
+                    print(f"❌ Giving up on {url} after {max_retries} attempts.")
+                    return []
+                await asyncio.sleep(2 * attempt)  # Exponential backoff
+
+        screenshot_path = os.path.join(SCREENSHOT_FOLDER, f"{url_date}.png")
+        if not os.path.exists(screenshot_path):
+            await take_screenshot(playwright, url, screenshot_path)
+
+        soup = BeautifulSoup(response.content, "lxml")
+
+        # Extract date shown on page (header)
+
+# Extract date and time shown on page (header)
+        date_on_page = None
+        time_on_page = None
+        sel = soup.select_one("#money_host_id > div > div > div > header > div.plan-title > div:nth-child(1) > div:nth-child(1) > div > a > small")
+        if sel:
+            header_text = sel.get_text(" ", strip=True)
+            # Prefer explicit dd/mm/YYYY pattern for date
+            match = re.search(r"(\d{2}/\d{2}/\d{4})", header_text)
+            if match:
+                dt = pd.to_datetime(match.group(1), dayfirst=True, errors='coerce')
+                if not pd.isna(dt):
+                    date_on_page = dt.date()
+            else:
+                # Fallback: try parsing any date-like string in the selected text
+                try:
+                    dt = pd.to_datetime(header_text, dayfirst=True, errors='coerce')
+                    if not pd.isna(dt):
+                        date_on_page = dt.date()
+                except:
+                    pass
+
+        # Extract time from the separate "now" element (format HH:MM:SS)
+        time_sel = soup.select_one("#money_host_id > div > div > div > header > div.plan-title > div:nth-child(1) > div:nth-child(2) > div > div:nth-child(1) > div.now.hidden-sm")
+        if time_sel:
+            time_text = time_sel.get_text(" ", strip=True)
+            time_match = re.search(r"(\d{2}:\d{2}:\d{2})", time_text)
+            if time_match:
+                time_on_page = time_match.group(1)
+
+        # Extract exchange rate table
+        table = soup.find("table", class_="table")
+        if not table:
+            return []
+
+        rows = table.find_all("tr")[1:]
+        parsed_rows = []
+
+        for row in rows:
+            cols = row.find_all("td")
+            if len(cols) >= 3:
+                try:
+                    rate = float(cols[2].text.strip().replace(",", ".").replace(" ", ""))
+                except:
+                    continue
+
+                # Detect arrow icon in the same table row (fa-arrow-up / fa-arrow-down or currency_green / currency_red)
+                variance = None
+                icon = row.find("i", class_=re.compile(r"(fa-arrow-(up|down)|currency_(green|red))"))
+                if icon:
+                    icon_classes = icon.get("class", [])
+                    if "fa-arrow-up" in icon_classes or "currency_green" in icon_classes:
+                        variance = "up"
+                    elif "fa-arrow-down" in icon_classes or "currency_red" in icon_classes:
+                        variance = "down"
+
+                parsed_rows.append({
+                    "ScrapeDate": url_date,
+                    "CurrencyName": cols[0].text.strip(),
+                    "CurrencyCode": cols[1].text.strip(),
+                    "ExchangeRate": rate,
+                    "DateOnPage": date_on_page,
+                    "TimeOnPage": time_on_page,
+                    "Variance": variance
+                })
+        return parsed_rows
+
+# ========== EMAIL HTML BUILDING ==========
+
+def build_html(df: pd.DataFrame) -> str:
+    def sort_key(name):
+        if str(name).startswith("USD"): return 0
+        if str(name).startswith("EUR"): return 1
+        if str(name).startswith("GBP") or str(name).startswith("GPB"): return 2
+        return 3
+
+    df_sorted = df.copy()
+    df_sorted["__sort__"] = df_sorted["CurrencyName"].apply(sort_key)
+    df_sorted = df_sorted.sort_values(by="__sort__").drop(columns="__sort__")
+
+    headers = ''.join(f"<th>{col}</th>" for col in df_sorted.columns)
+    rows = ""
+
+    for _, row in df_sorted.iterrows():
+        is_usd = str(row["CurrencyName"]).startswith("USD")
+        style = "class='usd-highlight'" if is_usd else ""
+        cell_data = ''.join(f"<td>{row[col]}</td>" for col in df_sorted.columns)
+        rows += f"<tr {style}>{cell_data}</tr>"
+
+    today = date.today().strftime("%Y-%m-%d")
+    return f"""
+    <html>
+    <head>
+        <style>
+            table {{
+                border-collapse: collapse;
+                width: 100%;
+                font-family: Arial, sans-serif;
+                font-size: 14px;
+            }}
+            th, td {{
+                border: 1px solid #999;
+                padding: 6px 10px;
+                text-align: left;
+            }}
+            tr.usd-highlight {{
+                background-color: #e0f8e9;
+            }}
+        </style>
+    </head>
+    <body>
+        <p>Dear Team Rikolto 👋,</p>
+        <p>Here are the BCC exchange rates for today ({today}):</p>
+        <table><thead><tr>{headers}</tr></thead><tbody>{rows}</tbody></table>
+        <p>Regards,<br>Rikolto Bot Automation by Nestor 🤖</p>
+    </body>
+    </html>
+    """
+
+# ========== EMAIL SENDING ==========
+
+async def send_email_graph(token: str, df: pd.DataFrame, screenshot_path: str):
+    today_str = date.today().strftime("%Y-%m-%d")
+    csv_bytes = df.to_csv(index=False).encode("utf-8")
+
+    with open(screenshot_path, "rb") as f:
+        screenshot_data = f.read()
+
+    csv_b64 = base64.b64encode(csv_bytes).decode("utf-8")
+    img_b64 = base64.b64encode(screenshot_data).decode("utf-8")
+
+    recipients = {
+        "toRecipients": [{"emailAddress": {"address": x.strip()}} for x in EMAIL_TO if x.strip()],
+        "ccRecipients": [{"emailAddress": {"address": x.strip()}} for x in EMAIL_CC if x.strip()],
+        "bccRecipients": [{"emailAddress": {"address": x.strip()}} for x in EMAIL_BCC if x.strip()]
+    }
+
+    message = {
+        "message": {
+            "subject": f"💱 BCC Exchange Rates – {today_str}",
+            "body": { "contentType": "HTML", "content": build_html(df) },
+            "from": {"emailAddress": {"address": EMAIL_FROM}},
+            "attachments": [
+                {
+                    "@odata.type": "#microsoft.graph.fileAttachment",
+                    "name": f"ExchangeRates_{today_str}.csv",
+                    "contentType": "text/csv",
+                    "contentBytes": csv_b64
+                },
+                {
+                    "@odata.type": "#microsoft.graph.fileAttachment",
+                    "name": f"{today_str}.png",
+                    "contentType": "image/png",
+                    "contentBytes": img_b64
+                }
+            ],
+            **recipients
+        },
+        "saveToSentItems": True
+    }
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
+    }
+
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            f"https://graph.microsoft.com/v1.0/users/{EMAIL_FROM}/sendMail",
+            headers=headers,
+            json=message
+        ) as resp:
+            response_text = await resp.text()
+            if resp.status == 202:
+                print("✅ Email sent successfully.")
+            else:
+                print(f"❌ Email failed. Status: {resp.status}")
+                print("Response details:", response_text)  # Log full error
+
+# ========== MAIN EXECUTION ==========
+
+async def main():
+    print(f"📆 Starting scrape at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    os.makedirs(SCREENSHOT_FOLDER, exist_ok=True)
+
+    existing_df = pd.DataFrame()
+    existing_dates = set()
+
+    if os.path.exists(OUTPUT_CSV_FILE):
+        existing_df = pd.read_csv(OUTPUT_CSV_FILE)
+        existing_df = parse_scrapedate_column(existing_df)
+        existing_dates = set(existing_df["ScrapeDate"].dt.date)
+
+    urls = generate_urls(START_DATE, existing_dates)
+    all_results = []
+
+    async with httpx.AsyncClient() as client, async_playwright() as playwright:
+        sem = asyncio.Semaphore(5)
+        tasks = [fetch_single_page(client, d, u, sem, playwright) for d, u in urls]
+        results = await tqdm_asyncio.gather(*tasks)
+        for res in results:
+            all_results.extend(res)
+
+    if not all_results:
+        print("✅ No new data to process.")
+        return
+
+    new_df = pd.DataFrame(all_results)
+    new_df["ScrapeDate"] = pd.to_datetime(new_df["ScrapeDate"])
+
+    # --- Optional: compute numeric variance vs last saved rate ---
+    if not existing_df.empty:
+        # get last known exchange rate per currency
+        last_rates = (
+            existing_df.sort_values("ScrapeDate")
+            .groupby("CurrencyCode", as_index=False)
+            .last()[["CurrencyCode", "ExchangeRate"]]
+            .rename(columns={"ExchangeRate": "PrevExchangeRate"})
+        )
+        new_df = new_df.merge(last_rates, on="CurrencyCode", how="left")
+        new_df["VarianceNumeric"] = new_df["ExchangeRate"] - new_df["PrevExchangeRate"]
+        new_df["VarianceDirection"] = new_df["VarianceNumeric"].apply(
+            lambda x: "up" if pd.notna(x) and x > 0 else ("down" if pd.notna(x) and x < 0 else ("no_change" if pd.notna(x) and x == 0 else None))
+        )
+
+    combined_df = pd.concat([existing_df, new_df], ignore_index=True)
+    combined_df.drop_duplicates(inplace=True)
+    combined_df.sort_values(by=["ScrapeDate", "CurrencyCode"], inplace=True)
+
+    format_scrapedate_column(combined_df).to_csv(OUTPUT_CSV_FILE, index=False)
+    print(f"💾 CSV updated: {OUTPUT_CSV_FILE}")
+
+    # Email if requested
+    if SEND_EMAIL:
+        today = date.today()
+        today_df = new_df[new_df["ScrapeDate"].dt.date == today]
+        screenshot_path = os.path.join(SCREENSHOT_FOLDER, f"{today.isoformat()}.png")
+
+        if not today_df.empty and os.path.exists(screenshot_path):
+            token = acquire_token()
+            await send_email_graph(token, today_df, screenshot_path)
+        else:
+            print("⚠️ No new data for today or missing screenshot. Email skipped.")
+    else:
+        print("📭 Email sending disabled.")
+
+if __name__ == "__main__":
+    asyncio.run(main())
