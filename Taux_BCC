@@ -1,18 +1,19 @@
 import os
 import asyncio
-import aiohttp
-import httpx
 import base64
+import logging
+from typing import List, Dict, Optional, Tuple
+from datetime import date, timedelta, datetime, time as dtime
+
+import httpx
+import aiohttp
 import pandas as pd
 from bs4 import BeautifulSoup
-from datetime import date, timedelta, datetime
-from tqdm.asyncio import tqdm_asyncio
-from pathlib import Path
 from msal import ConfidentialClientApplication
-from playwright.async_api import async_playwright
+from playwright.async_api import async_playwright, Browser, BrowserContext, Page
 import re
 
-# ========== LOAD FROM ENVIRONMENT VARIABLES ==========
+# ========== CONFIG & ENV ==========
 
 CLIENT_ID = os.getenv("CLIENT_ID")
 CLIENT_SECRET = os.getenv("CLIENT_SECRET")
@@ -22,18 +23,47 @@ EMAIL_TO = os.getenv("EMAIL_TO", "").split(",")
 EMAIL_CC = os.getenv("EMAIL_CC", "").split(",")
 EMAIL_BCC = os.getenv("EMAIL_BCC", "").split(",")
 
-# ========== STATIC CONFIGURATION ==========
-
-SEND_EMAIL = False  # Set to True to enable email sending
+SEND_EMAIL = False
 START_DATE = date(2025, 1, 1)
 
 OUTPUT_CSV_FILE = r"C:\OD\Rikolto International s.o.n\Rikolto in East Africa - Documents\East Africa operations\Finance\Finance Reporting Pack\DRCongo\2025\bcc_exchange_rates.csv"
 SCREENSHOT_FOLDER = os.path.join(os.path.dirname(OUTPUT_CSV_FILE), "screenshots")
 BCC_BASE_URL = "https://www.bcc.cd/operations-et-marches/domaine-operationnel/operations-de-change/cours-de-change/"
 
+# Concurrency / httpx tuning - tweak as needed
+MAX_CONCURRENCY = 8
+HTTPX_MAX_CONNECTIONS = 20
+HTTPX_KEEPALIVE = 10
+HTTPX_TIMEOUT_SECONDS = 15.0
+
+# ========== LOGGING ==========
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+    handlers=[logging.StreamHandler(), logging.FileHandler("tauxbcc.log")]
+)
+logger = logging.getLogger("tauxbcc")
+
+# ========== PRECOMPILED SELECTORS / REGEX ==========
+
+SELECTORS = {
+    "date_header": "#money_host_id > div > div > div > header > div.plan-title > div:nth-child(1) > div:nth-child(1) > div > a > small",
+    "time_header": "#money_host_id > div > div > div > header > div.plan-title > div:nth-child(1) > div:nth-child(2) > div > div:nth-child(1) > div.now.hidden-sm",
+    "exchange_table": "table.table"
+}
+
+DATE_RE = re.compile(r"(\d{2}/\d{2}/\d{4})")
+TIME_RE = re.compile(r"(\d{2}:\d{2}:\d{2})")
+ICON_RE = re.compile(r"(fa-arrow-(up|down)|currency_(green|red))")
+
+# Lock used to serialize screenshot creation to avoid races (simple approach)
+SCREENSHOT_LOCK = asyncio.Lock()
+
 # ========== AUTHENTICATION ==========
 
-def acquire_token():
+def acquire_token() -> str:
+    """Acquire Microsoft Graph token using client credentials."""
     if not all([CLIENT_ID, CLIENT_SECRET, TENANT_ID, EMAIL_FROM]):
         raise RuntimeError("Missing env vars: CLIENT_ID, CLIENT_SECRET, TENANT_ID, or EMAIL_FROM.")
 
@@ -44,163 +74,208 @@ def acquire_token():
         authority=authority
     )
     result = app.acquire_token_for_client(scopes=["https://graph.microsoft.com/.default"])
-
     if "access_token" in result:
-        print("✅ Token acquired via client credentials.\n")
+        logger.info("Token acquired via client credentials.")
         return result["access_token"]
-    else:
-        raise RuntimeError(f"❌ Auth failure:\n{result}")
+    raise RuntimeError(f"Auth failure: {result}")
 
 # ========== DATE UTILITIES ==========
 
-def parse_scrapedate_column(df):
-    """Convert ScrapeDate from dd/mm/yyyy strings to datetime objects."""
+def parse_scrapedate_column(df: pd.DataFrame) -> pd.DataFrame:
     df["ScrapeDate"] = pd.to_datetime(df["ScrapeDate"], format="%d/%m/%Y", errors="coerce")
     return df
 
-def format_scrapedate_column(df):
-    """Convert ScrapeDate datetime to dd/mm/yyyy string format for CSV storage."""
+def format_scrapedate_column(df: pd.DataFrame) -> pd.DataFrame:
     df["ScrapeDate"] = df["ScrapeDate"].dt.strftime("%d/%m/%Y")
     return df
 
-# ========== BCC SCRAPING LOGIC ==========
+def date_to_str(d: Optional[date]) -> Optional[str]:
+    return d.strftime("%d/%m/%Y") if d is not None else None
 
-def generate_urls(start_date: date, existing_dates: set):
-    urls = []
+def time_to_str(t: Optional[dtime]) -> Optional[str]:
+    return t.strftime("%H:%M:%S") if t is not None else None
+
+# ========== URL GENERATION ==========
+
+def generate_urls(start_date: date, existing_dates: set) -> List[Tuple[date, str]]:
+    urls: List[Tuple[date, str]] = []
     current = start_date
-    while current <= date.today():
+    today = date.today()
+    while current <= today:
         if current not in existing_dates:
             code = current.strftime("%d%m%Y")
             urls.append((current, f"{BCC_BASE_URL}{code}"))
         current += timedelta(days=1)
     return urls
 
-async def take_screenshot(playwright, url: str, screenshot_path: str):
+# ========== SCREENSHOTTING (reuse browser/context) ==========
+
+async def take_screenshot_with_context(context: BrowserContext, url: str, screenshot_path: str) -> None:
+    """Open a new page, navigate and save a screenshot. Caller should guard concurrency."""
+    page: Optional[Page] = None
     try:
-        browser = await playwright.chromium.launch()
-        context = await browser.new_context()
         page = await context.new_page()
         await page.goto(url, timeout=120000)
-        await asyncio.sleep(2)
+        await asyncio.sleep(1.0)  # allow dynamic content to render
         await page.screenshot(path=screenshot_path, full_page=True)
-        await browser.close()
-    except Exception as e:
-        print(f"❌ Screenshot error: {e}")
+        logger.info("Screenshot saved: %s", screenshot_path)
+    except Exception as exc:
+        logger.warning("Screenshot error for %s : %s", url, exc)
+    finally:
+        if page:
+            await page.close()
 
-async def fetch_single_page(client, url_date, url, semaphore, playwright, max_retries=3):
+# ========== PAGE FETCH & PARSE ==========
+
+async def fetch_single_page(
+    client: httpx.AsyncClient,
+    url_date: date,
+    url: str,
+    semaphore: asyncio.Semaphore,
+    context: BrowserContext
+) -> List[Dict]:
+    """Fetch a page with retries (404 short-circuit), take screenshot (once) and parse exchange rows."""
     async with semaphore:
+        # HTTP fetch with retries for transient errors
+        max_retries = 3
+        response: Optional[httpx.Response] = None
         for attempt in range(1, max_retries + 1):
             try:
-                response = await client.get(url, headers={"User-Agent": "Python"}, timeout=15)
+                response = await client.get(url)
                 if response.status_code == 404:
-                    print(f"❌ 404 Not Found for {url}. Skipping retries.")
+                    logger.debug("404 for %s, skipping.", url)
                     return []
                 response.raise_for_status()
-                break  # Success, exit retry loop
-            except Exception as e:
-                if isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 404:
-                    print(f"❌ 404 Not Found for {url}. Skipping retries.")
+                break
+            except httpx.HTTPStatusError as e:
+                status = getattr(e.response, "status_code", None)
+                if status == 404:
+                    logger.debug("404 for %s (HTTPStatusError), skipping.", url)
                     return []
-                print(f"Attempt {attempt} failed for {url}: {e}")
+                logger.warning("HTTP status error attempt %d for %s: %s", attempt, url, e)
                 if attempt == max_retries:
-                    print(f"❌ Giving up on {url} after {max_retries} attempts.")
+                    logger.error("Giving up on %s after %d attempts.", url, max_retries)
                     return []
-                await asyncio.sleep(2 * attempt)  # Exponential backoff
+                await asyncio.sleep(2 * attempt)
+            except httpx.RequestError as e:
+                logger.warning("Request error attempt %d for %s: %s", attempt, url, e)
+                if attempt == max_retries:
+                    logger.error("Giving up on %s after %d attempts.", url, max_retries)
+                    return []
+                await asyncio.sleep(2 * attempt)
+            except Exception as e:
+                # unexpected error - log and stop retrying
+                logger.exception("Unexpected error fetching %s: %s", url, e)
+                return []
 
+        if response is None:
+            logger.error("No response for %s", url)
+            return []
+
+        # Ensure screenshot exists (serialize creation to avoid race)
         screenshot_path = os.path.join(SCREENSHOT_FOLDER, f"{url_date}.png")
         if not os.path.exists(screenshot_path):
-            await take_screenshot(playwright, url, screenshot_path)
+            async with SCREENSHOT_LOCK:
+                if not os.path.exists(screenshot_path):
+                    await take_screenshot_with_context(context, url, screenshot_path)
 
+        # Parse HTML
         soup = BeautifulSoup(response.content, "lxml")
 
-        # Extract date shown on page (header)
-
-# Extract date and time shown on page (header)
-        date_on_page = None
-        time_on_page = None
-        sel = soup.select_one("#money_host_id > div > div > div > header > div.plan-title > div:nth-child(1) > div:nth-child(1) > div > a > small")
+        # Extract header date
+        date_on_page: Optional[date] = None
+        sel = soup.select_one(SELECTORS["date_header"])
         if sel:
             header_text = sel.get_text(" ", strip=True)
-            # Prefer explicit dd/mm/YYYY pattern for date
-            match = re.search(r"(\d{2}/\d{2}/\d{4})", header_text)
-            if match:
-                dt = pd.to_datetime(match.group(1), dayfirst=True, errors='coerce')
+            m = DATE_RE.search(header_text)
+            if m:
+                dt = pd.to_datetime(m.group(1), dayfirst=True, errors="coerce")
                 if not pd.isna(dt):
                     date_on_page = dt.date()
             else:
-                # Fallback: try parsing any date-like string in the selected text
-                try:
-                    dt = pd.to_datetime(header_text, dayfirst=True, errors='coerce')
-                    if not pd.isna(dt):
-                        date_on_page = dt.date()
-                except:
-                    pass
+                # fallback parse
+                dt = pd.to_datetime(header_text, dayfirst=True, errors="coerce")
+                if not pd.isna(dt):
+                    date_on_page = dt.date()
 
-        # Extract time from the separate "now" element (format HH:MM:SS)
-        time_sel = soup.select_one("#money_host_id > div > div > div > header > div.plan-title > div:nth-child(1) > div:nth-child(2) > div > div:nth-child(1) > div.now.hidden-sm")
+        # Extract header time
+        time_on_page: Optional[dtime] = None
+        time_sel = soup.select_one(SELECTORS["time_header"])
         if time_sel:
             time_text = time_sel.get_text(" ", strip=True)
-            time_match = re.search(r"(\d{2}:\d{2}:\d{2})", time_text)
-            if time_match:
-                time_on_page = time_match.group(1)
+            tm = TIME_RE.search(time_text)
+            if tm:
+                try:
+                    parsed_tm = datetime.strptime(tm.group(1), "%H:%M:%S").time()
+                    time_on_page = parsed_tm
+                except Exception:
+                    logger.debug("Failed to parse time %s", tm.group(1))
 
-        # Extract exchange rate table
-        table = soup.find("table", class_="table")
+        # Extract table rows
+        table = soup.select_one(SELECTORS["exchange_table"])
         if not table:
+            logger.debug("No exchange table found for %s", url)
             return []
 
         rows = table.find_all("tr")[1:]
-        parsed_rows = []
+        parsed_rows: List[Dict] = []
 
         for row in rows:
             cols = row.find_all("td")
-            if len(cols) >= 3:
-                try:
-                    rate = float(cols[2].text.strip().replace(",", ".").replace(" ", ""))
-                except:
-                    continue
+            if len(cols) < 3:
+                continue
+            # Parse rate robustly
+            raw_rate = cols[2].get_text(" ", strip=True)
+            try:
+                rate = float(raw_rate.replace(",", ".").replace(" ", ""))
+            except Exception:
+                logger.debug("Skipping row with unparsable rate: %s", raw_rate)
+                continue
 
-                # Detect arrow icon in the same table row (fa-arrow-up / fa-arrow-down or currency_green / currency_red)
-                variance = None
-                icon = row.find("i", class_=re.compile(r"(fa-arrow-(up|down)|currency_(green|red))"))
-                if icon:
-                    icon_classes = icon.get("class", [])
-                    if "fa-arrow-up" in icon_classes or "currency_green" in icon_classes:
-                        variance = "up"
-                    elif "fa-arrow-down" in icon_classes or "currency_red" in icon_classes:
-                        variance = "down"
+            # Determine variance from icon in the row (if present)
+            variance: Optional[str] = None
+            icon = row.find("i", class_=ICON_RE)
+            if icon:
+                classes = icon.get("class", [])
+                if "fa-arrow-up" in classes or "currency_green" in classes:
+                    variance = "up"
+                elif "fa-arrow-down" in classes or "currency_red" in classes:
+                    variance = "down"
 
-                parsed_rows.append({
-                    "ScrapeDate": url_date,
-                    "CurrencyName": cols[0].text.strip(),
-                    "CurrencyCode": cols[1].text.strip(),
-                    "ExchangeRate": rate,
-                    "DateOnPage": date_on_page,
-                    "TimeOnPage": time_on_page,
-                    "Variance": variance
-                })
+            parsed_rows.append({
+                "ScrapeDate": url_date,
+                "CurrencyName": cols[0].get_text(" ", strip=True),
+                "CurrencyCode": cols[1].get_text(" ", strip=True),
+                "ExchangeRate": rate,
+                "DateOnPage": date_on_page,
+                "TimeOnPage": time_on_page,
+                "Variance": variance
+            })
+
         return parsed_rows
 
-# ========== EMAIL HTML BUILDING ==========
+# ========== EMAIL BUILDING & SENDING (unchanged logic but uses logging) ==========
 
 def build_html(df: pd.DataFrame) -> str:
     def sort_key(name):
-        if str(name).startswith("USD"): return 0
-        if str(name).startswith("EUR"): return 1
-        if str(name).startswith("GBP") or str(name).startswith("GPB"): return 2
+        if str(name).startswith("USD"):
+            return 0
+        if str(name).startswith("EUR"):
+            return 1
+        if str(name).startswith("GBP") or str(name).startswith("GPB"):
+            return 2
         return 3
 
     df_sorted = df.copy()
     df_sorted["__sort__"] = df_sorted["CurrencyName"].apply(sort_key)
     df_sorted = df_sorted.sort_values(by="__sort__").drop(columns="__sort__")
 
-    headers = ''.join(f"<th>{col}</th>" for col in df_sorted.columns)
+    headers = "".join(f"<th>{col}</th>" for col in df_sorted.columns)
     rows = ""
-
     for _, row in df_sorted.iterrows():
         is_usd = str(row["CurrencyName"]).startswith("USD")
         style = "class='usd-highlight'" if is_usd else ""
-        cell_data = ''.join(f"<td>{row[col]}</td>" for col in df_sorted.columns)
+        cell_data = "".join(f"<td>{row[col]}</td>" for col in df_sorted.columns)
         rows += f"<tr {style}>{cell_data}</tr>"
 
     today = date.today().strftime("%Y-%m-%d")
@@ -208,37 +283,23 @@ def build_html(df: pd.DataFrame) -> str:
     <html>
     <head>
         <style>
-            table {{
-                border-collapse: collapse;
-                width: 100%;
-                font-family: Arial, sans-serif;
-                font-size: 14px;
-            }}
-            th, td {{
-                border: 1px solid #999;
-                padding: 6px 10px;
-                text-align: left;
-            }}
-            tr.usd-highlight {{
-                background-color: #e0f8e9;
-            }}
+            table {{ border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; font-size: 14px; }}
+            th, td {{ border: 1px solid #999; padding: 6px 10px; text-align: left; }}
+            tr.usd-highlight {{ background-color: #e0f8e9; }}
         </style>
     </head>
     <body>
         <p>Dear Team Rikolto 👋,</p>
         <p>Here are the BCC exchange rates for today ({today}):</p>
         <table><thead><tr>{headers}</tr></thead><tbody>{rows}</tbody></table>
-        <p>Regards,<br>Rikolto Bot Automation by Nestor 🤖</p>
+        <p>Regards,<br>Rikolto Bot Automation</p>
     </body>
     </html>
     """
 
-# ========== EMAIL SENDING ==========
-
 async def send_email_graph(token: str, df: pd.DataFrame, screenshot_path: str):
     today_str = date.today().strftime("%Y-%m-%d")
     csv_bytes = df.to_csv(index=False).encode("utf-8")
-
     with open(screenshot_path, "rb") as f:
         screenshot_data = f.read()
 
@@ -254,7 +315,7 @@ async def send_email_graph(token: str, df: pd.DataFrame, screenshot_path: str):
     message = {
         "message": {
             "subject": f"💱 BCC Exchange Rates – {today_str}",
-            "body": { "contentType": "HTML", "content": build_html(df) },
+            "body": {"contentType": "HTML", "content": build_html(df)},
             "from": {"emailAddress": {"address": EMAIL_FROM}},
             "attachments": [
                 {
@@ -286,47 +347,64 @@ async def send_email_graph(token: str, df: pd.DataFrame, screenshot_path: str):
             headers=headers,
             json=message
         ) as resp:
-            response_text = await resp.text()
+            text = await resp.text()
             if resp.status == 202:
-                print("✅ Email sent successfully.")
+                logger.info("Email sent successfully.")
             else:
-                print(f"❌ Email failed. Status: {resp.status}")
-                print("Response details:", response_text)  # Log full error
+                logger.error("Email failed. Status: %s. Response: %s", resp.status, text)
 
-# ========== MAIN EXECUTION ==========
+# ========== MAIN ==========
 
 async def main():
-    print(f"📆 Starting scrape at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info("Starting scrape at %s", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     os.makedirs(SCREENSHOT_FOLDER, exist_ok=True)
 
     existing_df = pd.DataFrame()
     existing_dates = set()
-
     if os.path.exists(OUTPUT_CSV_FILE):
         existing_df = pd.read_csv(OUTPUT_CSV_FILE)
         existing_df = parse_scrapedate_column(existing_df)
-        existing_dates = set(existing_df["ScrapeDate"].dt.date)
+        existing_dates = set(existing_df["ScrapeDate"].dt.date.dropna())
 
     urls = generate_urls(START_DATE, existing_dates)
-    all_results = []
+    if not urls:
+        logger.info("No new dates to fetch.")
+        return
 
-    async with httpx.AsyncClient() as client, async_playwright() as playwright:
-        sem = asyncio.Semaphore(5)
-        tasks = [fetch_single_page(client, d, u, sem, playwright) for d, u in urls]
-        results = await tqdm_asyncio.gather(*tasks)
-        for res in results:
-            all_results.extend(res)
+    all_results: List[Dict] = []
+
+    limits = httpx.Limits(max_connections=HTTPX_MAX_CONNECTIONS, max_keepalive_connections=HTTPX_KEEPALIVE)
+    timeout = httpx.Timeout(HTTPX_TIMEOUT_SECONDS)
+
+    # Create shared browser/context once and reuse pages for screenshots
+    async with httpx.AsyncClient(limits=limits, timeout=timeout) as client, async_playwright() as playwright:
+        browser: Browser = await playwright.chromium.launch(headless=True)
+        context: BrowserContext = await browser.new_context()
+
+        try:
+            sem = asyncio.Semaphore(MAX_CONCURRENCY)
+            tasks = [fetch_single_page(client, d, u, sem, context) for d, u in urls]
+            results = await asyncio.gather(*tasks)
+            for res in results:
+                if res:
+                    all_results.extend(res)
+        finally:
+            await context.close()
+            await browser.close()
 
     if not all_results:
-        print("✅ No new data to process.")
+        logger.info("No new data to process.")
         return
 
     new_df = pd.DataFrame(all_results)
-    new_df["ScrapeDate"] = pd.to_datetime(new_df["ScrapeDate"])
 
-    # --- Optional: compute numeric variance vs last saved rate ---
+    # Normalize types: ScrapeDate -> datetime, DateOnPage -> dd/mm/YYYY string, TimeOnPage -> HH:MM:SS string
+    new_df["ScrapeDate"] = pd.to_datetime(new_df["ScrapeDate"])
+    new_df["DateOnPage"] = new_df["DateOnPage"].apply(date_to_str)
+    new_df["TimeOnPage"] = new_df["TimeOnPage"].apply(time_to_str)
+
+    # Compute numeric variance vs previous if possible
     if not existing_df.empty:
-        # get last known exchange rate per currency
         last_rates = (
             existing_df.sort_values("ScrapeDate")
             .groupby("CurrencyCode", as_index=False)
@@ -339,26 +417,36 @@ async def main():
             lambda x: "up" if pd.notna(x) and x > 0 else ("down" if pd.notna(x) and x < 0 else ("no_change" if pd.notna(x) and x == 0 else None))
         )
 
-    combined_df = pd.concat([existing_df, new_df], ignore_index=True)
+    combined_df = pd.concat([existing_df, new_df], ignore_index=True, sort=False)
     combined_df.drop_duplicates(inplace=True)
     combined_df.sort_values(by=["ScrapeDate", "CurrencyCode"], inplace=True)
 
-    format_scrapedate_column(combined_df).to_csv(OUTPUT_CSV_FILE, index=False)
-    print(f"💾 CSV updated: {OUTPUT_CSV_FILE}")
+    # Format ScrapeDate for CSV and ensure DateOnPage/TimeOnPage are strings
+    if "ScrapeDate" in combined_df.columns:
+        combined_df = format_scrapedate_column(combined_df)
+    if "DateOnPage" in combined_df.columns:
+        combined_df["DateOnPage"] = combined_df["DateOnPage"].astype(pd.StringDtype())
+    if "TimeOnPage" in combined_df.columns:
+        combined_df["TimeOnPage"] = combined_df["TimeOnPage"].astype(pd.StringDtype())
 
-    # Email if requested
+    combined_df.to_csv(OUTPUT_CSV_FILE, index=False)
+    logger.info("CSV updated: %s", OUTPUT_CSV_FILE)
+
+    # Email step
     if SEND_EMAIL:
         today = date.today()
         today_df = new_df[new_df["ScrapeDate"].dt.date == today]
         screenshot_path = os.path.join(SCREENSHOT_FOLDER, f"{today.isoformat()}.png")
-
         if not today_df.empty and os.path.exists(screenshot_path):
             token = acquire_token()
             await send_email_graph(token, today_df, screenshot_path)
         else:
-            print("⚠️ No new data for today or missing screenshot. Email skipped.")
+            logger.warning("No new data for today or missing screenshot. Email skipped.")
     else:
-        print("📭 Email sending disabled.")
+        logger.info("Email sending disabled.")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Interrupted by user.")
