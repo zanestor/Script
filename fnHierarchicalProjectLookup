@@ -1,0 +1,81 @@
+// Function: fnHierarchicalProjectLookup
+// Parameters:
+//   dataTable: Source table
+//   lookupTable: Linkage table
+//   projectColumn (optional): Name of project column (default "Project")
+//   yourRefColumn (optional): Name of Your Reference column (default "Your Reference")
+//   creditorColumn (optional): Name of Creditor Number column (default "Creditor Number")
+// Returns: Table with updated project column
+
+(dataTable as table, lookupTable as table, optional projectColumn as text, optional yourRefColumn as text, optional creditorColumn as text) as table =>
+let
+    // Set default column names if not provided
+    projectCol = if projectColumn = null then "Project" else projectColumn,
+    yourRefCol = if yourRefColumn = null then "Your Reference" else yourRefColumn,
+    creditorCol = if creditorColumn = null then "Creditor Number" else creditorColumn,
+    
+    Result = Table.AddColumn(
+        dataTable,
+        "Project_New",
+        each 
+            let
+                currentProject = Record.Field(_, projectCol),
+                currentYourRef = Record.Field(_, yourRefCol),
+                currentCreditor = Record.Field(_, creditorCol),
+                
+                // Priority 1: All 3 conditions match
+                try1 = try 
+                    Table.SelectRows(
+                        lookupTable,
+                        (r) =>
+                            r[ProjectCodecofinancement] = currentProject and
+                            r[YourRef] = currentYourRef and
+                            r[Vendor] = currentCreditor
+                    ){0}[ProjectCode]
+                otherwise null,
+                
+                // Priority 2: Project + YourRef match
+                try2 = if try1 = null then
+                    try 
+                        Table.SelectRows(
+                            lookupTable,
+                            (r) =>
+                                r[ProjectCodecofinancement] = currentProject and
+                                r[YourRef] = currentYourRef
+                        ){0}[ProjectCode]
+                    otherwise null
+                else null,
+                
+                // Priority 3: Project + Vendor match
+                try3 = if try1 = null and try2 = null then
+                    try 
+                        Table.SelectRows(
+                            lookupTable,
+                            (r) =>
+                                r[ProjectCodecofinancement] = currentProject and
+                                r[Vendor] = currentCreditor
+                        ){0}[ProjectCode]
+                    otherwise null
+                else null,
+                
+                // Priority 4: Project only match
+                try4 = if try1 = null and try2 = null and try3 = null then
+                    try 
+                        Table.SelectRows(
+                            lookupTable,
+                            (r) => r[ProjectCodecofinancement] = currentProject
+                        ){0}[ProjectCode]
+                    otherwise null
+                else null,
+                
+                finalResult = try1 ?? try2 ?? try3 ?? try4 ?? currentProject
+            in
+                finalResult
+    ),
+    
+    // Rename columns
+    Renamed = Table.RenameColumns(Result, {{projectCol, "Project_Old"}}),
+    Final = Table.RenameColumns(Renamed, {{"Project_New", projectCol}}),
+    Cleaned = Table.RemoveColumns(Final, {"Project_Old"})
+in
+    Cleaned
