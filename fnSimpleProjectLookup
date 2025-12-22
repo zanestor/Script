@@ -1,0 +1,61 @@
+// Function: fnSimpleProjectLookup
+// Description: Performs a simple project lookup with 2 conditions
+// Parameters:
+//   sourceTable: Source table to transform
+//   lookupTable: Table containing lookup values
+//   sourceProjectCol: Column name in source table for project ID (default "Project")
+//   sourceYourRefCol: Column name in source table for Your Reference (default "Your Reference")
+//   lookupProjectOldCol: Column name in lookup table for old project code (default "ProjectCodeOld")
+//   lookupYourRefCol: Column name in lookup table for Your Reference (default "Your Reference")
+//   lookupProjectNewCol: Column name in lookup table for new project code (default "ProjectCodeNew")
+// Returns: Table with updated project column
+
+let
+    fnSimpleProjectLookup = (
+        sourceTable as table,
+        lookupTable as table,
+        optional sourceProjectCol as text,
+        optional sourceYourRefCol as text,
+        optional lookupProjectOldCol as text,
+        optional lookupYourRefCol as text,
+        optional lookupProjectNewCol as text
+    ) as table =>
+    
+    let
+        // Set default values for parameters
+        srcProjCol = if sourceProjectCol = null then "Project" else sourceProjectCol,
+        srcRefCol = if sourceYourRefCol = null then "Your Reference" else sourceYourRefCol,
+        lookupOldCol = if lookupProjectOldCol = null then "ProjectCodeOld" else lookupProjectOldCol,
+        lookupRefCol = if lookupYourRefCol = null then "Your Reference" else lookupYourRefCol,
+        lookupNewCol = if lookupProjectNewCol = null then "ProjectCodeNew" else lookupProjectNewCol,
+        
+        // Add new column with lookup
+        AddedColumn = Table.AddColumn(
+            sourceTable,
+            "ProjectNew",
+            each 
+                let
+                    lookupValue = List.First(
+                        Table.SelectRows(
+                            lookupTable,
+                            (r) => 
+                                Record.Field(r, lookupOldCol) = Record.Field(_, srcProjCol) and 
+                                Record.Field(r, lookupRefCol) = Record.Field(_, srcRefCol)
+                        )[lookupNewCol]
+                    )
+                in
+                    if lookupValue <> null then lookupValue else Record.Field(_, srcProjCol)
+        ),
+        
+        // Rename columns to maintain original structure
+        Renamed = Table.RenameColumns(AddedColumn, {
+            {srcProjCol, "ProjectOld"},
+            {"ProjectNew", srcProjCol}
+        }),
+        
+        // Remove temporary column
+        Final = Table.RemoveColumns(Renamed, {"ProjectOld"})
+    in
+        Final
+in
+    fnSimpleProjectLookup
