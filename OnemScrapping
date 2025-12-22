@@ -109,4 +109,5 @@ let
     // 8. Filter for Active Jobs Only
     ActiveOnly = Table.SelectRows(RenamedColumns, each ([Status] = "Active"))
 in
+
     ActiveOnly
