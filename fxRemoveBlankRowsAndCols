@@ -1,0 +1,18 @@
+(t as table, optional blankValues as list) as table =>
+  let
+    // If no custom blank values are provided, treat "" and null as blanks
+    blanks = if (blankValues = null) then {"", null} else blankValues, 
+    // Keep only rows where at least one field is NOT in the blanks list
+    RemoveBlankRows = Table.SelectRows(
+      t, 
+      each not List.IsEmpty(List.RemoveMatchingItems(Record.FieldValues(_), blanks))
+    ), 
+    // Build a list of column names that have at least one NON-blank value
+    colsToKeep = List.Select(
+      Table.ColumnNames(RemoveBlankRows), 
+      each not List.IsEmpty(List.RemoveMatchingItems(Table.Column(RemoveBlankRows, _), blanks))
+    ), 
+    // Keep only the non-blank columns
+    RemoveBlankCols = Table.SelectColumns(RemoveBlankRows, colsToKeep)
+  in
+    RemoveBlankCols
