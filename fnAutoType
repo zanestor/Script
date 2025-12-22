@@ -1,0 +1,50 @@
+// Custom Function: fnAutoType
+(tableToTransform as table, optional sampleSize as nullable number) as table =>
+let
+    SampleSize = if sampleSize = null then 1000 else sampleSize,
+    SampleData = Table.Buffer(Table.FirstN(tableToTransform, SampleSize)),
+    ColumnNames = Table.ColumnNames(tableToTransform),
+
+    TypeTransformations = List.Transform(ColumnNames, (columnName) =>
+        let
+            ColumnValues = List.RemoveNulls(Table.Column(SampleData, columnName)),
+            IsColumnEmpty = List.IsEmpty(ColumnValues),
+
+            CanBeLogical = not IsColumnEmpty and List.MatchesAll(ColumnValues, each (try Value.FromText(_) is logical otherwise false)),
+            CanBeNumber = not IsColumnEmpty and List.MatchesAll(ColumnValues, each (try Value.FromText(_) is number otherwise false)),
+
+            // Among numbers, distinguish decimals from integers
+            DecimalDetected =
+                if CanBeNumber then
+                    let
+                        AsNumbers = List.Transform(ColumnValues, each try Number.From(_) otherwise null),
+                        NonNullNumbers = List.RemoveNulls(AsNumbers),
+                        HasDecimal = List.AnyTrue(List.Transform(NonNullNumbers, each _ <> Number.RoundDown(_)))
+                    in
+                        HasDecimal
+                else
+                    false,
+
+            CanBeDateTimeZone = not IsColumnEmpty and List.MatchesAll(ColumnValues, each (try Value.FromText(_) is datetimezone otherwise false)),
+            CanBeDateTime = not IsColumnEmpty and List.MatchesAll(ColumnValues, each (try Value.FromText(_) is datetime otherwise false)),
+            CanBeDate = not IsColumnEmpty and List.MatchesAll(ColumnValues, each (try Value.FromText(_) is date otherwise false)),
+            CanBeTime = not IsColumnEmpty and List.MatchesAll(ColumnValues, each (try Value.FromText(_) is time otherwise false)),
+            CanBeDuration = not IsColumnEmpty and List.MatchesAll(ColumnValues, each (try Value.FromText(_) is duration otherwise false)),
+
+            DetectedType =
+                if CanBeLogical then type logical
+                else if CanBeNumber and DecimalDetected then Currency.Type
+                else if CanBeNumber then Int64.Type
+                else if CanBeDateTimeZone then type datetimezone
+                else if CanBeDateTime then type datetime
+                else if CanBeDate then type date
+                else if CanBeTime then type time
+                else if CanBeDuration then type duration
+                else type text
+        in
+            {columnName, DetectedType}
+    ),
+
+    Result = Table.TransformColumnTypes(tableToTransform, TypeTransformations)
+in
+    Result
