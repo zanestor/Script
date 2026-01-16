@@ -1,0 +1,24 @@
+(ReportingDate as date, SourceCurrency as text, TargetCurrency as text, ExchangeRateTable as table) as nullable number =>
+let
+    // Filter for the specific currency pair
+    FilteredRates = Table.SelectRows(
+        ExchangeRateTable, 
+        each [SourceCurrencyCode] = SourceCurrency and [TragetCurrencyCode] = TargetCurrency
+    ),
+    
+    // Sort by date descending
+    SortedRates = Table.Sort(FilteredRates, {{"Date", Order.Descending}}),
+    
+    // Find the first rate on or before the reporting date
+    MatchingRate = List.First(
+        List.Select(
+            Table.ToRecords(SortedRates),
+            (er) => er[Date] <= ReportingDate
+        ),
+        null
+    ),
+    
+    // Return the rate or null if not found
+    Result = if MatchingRate = null then null else MatchingRate[Rate]
+in
+    Result
