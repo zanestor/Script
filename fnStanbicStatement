@@ -13,10 +13,9 @@
                         currentGroupPayRef = [GroupPayRef],
                         groupRows = Table.SelectRows(SortedRows, each [GroupPayRef] = currentGroupPayRef),
                         descriptions = groupRows[Description],
-                        getFirstWord = (desc) => Text.Combine(List.FirstN(Text.Split(desc, " "), 1), ""),
-                        firstWords = List.Transform(descriptions, getFirstWord),
+                        allWords = List.Combine(List.Transform(descriptions, each Text.Split(_, " "))),
                         isPattern = (word) => (Text.StartsWith(word, "UG") or Text.StartsWith(word, "TZ")) and Text.Length(word) > 2,
-                        patternMatches = List.Select(firstWords, isPattern),
+                        patternMatches = List.Select(allWords, isPattern),
                         fallback = Text.Combine(List.FirstN(Text.Split(descriptions{0}, " "), 2), " "),
                         result = if List.Count(patternMatches) > 0 then patternMatches{0} else fallback
                     in
