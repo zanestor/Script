@@ -1,0 +1,27 @@
+(sourceTable) =>
+        let
+            Headers = Table.PromoteHeaders(Table.Skip(sourceTable, each not List.ContainsAny(Record.ToList(_), {"Date", "Description"}))),
+            PayRefNarr = Table.AddColumn(Headers, "PayRefNarrative", each List.Last(Text.Split([Description], " ")), type text),
+            GroupPayRef = Table.AddColumn(PayRefNarr, "GroupPayRef", each Text.Start([PayRefNarrative], 8), type text),
+            ChangedType = Table.TransformColumnTypes(GroupPayRef,{{"Date", type date}, {"Value Date", type date}, {"Debit", Currency.Type}, {"Credit", Currency.Type}}),
+            SortedRows = Table.Sort(ChangedType, {{"GroupPayRef", Order.Ascending}, {"Debit", Order.Ascending}}),
+            YourRef = Table.AddColumn(
+                SortedRows, 
+                "YourRef", 
+                each 
+                    let
+                        currentGroupPayRef = [GroupPayRef],
+                        groupRows = Table.SelectRows(SortedRows, each [GroupPayRef] = currentGroupPayRef),
+                        descriptions = groupRows[Description],
+                        getFirstWord = (desc) => Text.Combine(List.FirstN(Text.Split(desc, " "), 1), ""),
+                        firstWords = List.Transform(descriptions, getFirstWord),
+                        isPattern = (word) => (Text.StartsWith(word, "UG") or Text.StartsWith(word, "TZ")) and Text.Length(word) > 2,
+                        patternMatches = List.Select(firstWords, isPattern),
+                        fallback = Text.Combine(List.FirstN(Text.Split(descriptions{0}, " "), 2), " "),
+                        result = if List.Count(patternMatches) > 0 then patternMatches{0} else fallback
+                    in
+                        result,
+                type text
+            )
+        in
+            YourRef
