@@ -1,0 +1,247 @@
+{
+  "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "description": "Option 1 – When a Microsoft Forms response is submitted, create a candidate-specific SharePoint upload folder, generate a 30-minute expiring upload link, and email it to the candidate.",
+    "author": "HR Automation",
+    "version": "1.0.0",
+    "instructions": [
+      "1. Import this flow in Power Automate (My flows > Import > Import Package).",
+      "2. Update every placeholder enclosed in << >> with your actual values.",
+      "3. Re-authenticate the Microsoft Forms, SharePoint, and Office 365 Outlook connections.",
+      "4. Save and test the flow by submitting a test form response."
+    ]
+  },
+  "definition": {
+    "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+    "actions": {
+      "Get_response_details": {
+        "type": "OpenApiConnection",
+        "inputs": {
+          "host": {
+            "connectionName": "shared_microsoftforms",
+            "operationId": "GetFormResponseById",
+            "apiId": "/providers/Microsoft.PowerApps/apis/shared_microsoftforms"
+          },
+          "parameters": {
+            "form_id": "<<YOUR_FORM_ID>>",
+            "response_id": "@triggerOutputs()?['body/value'][0]['resourceData/responseId']"
+          }
+        },
+        "runAfter": {}
+      },
+
+      "Initialize_CandidateEmail": {
+        "type": "InitializeVariable",
+        "inputs": {
+          "variables": [
+            {
+              "name": "CandidateEmail",
+              "type": "string",
+              "value": "@outputs('Get_response_details')?['body/r2']"
+            }
+          ]
+        },
+        "runAfter": {
+          "Get_response_details": ["Succeeded"]
+        }
+      },
+
+      "Initialize_FolderPath": {
+        "type": "InitializeVariable",
+        "inputs": {
+          "variables": [
+            {
+              "name": "CandidateFolderPath",
+              "type": "string",
+              "value": "@concat('/Recruitment/<<JOB_FOLDER_NAME>>/', variables('CandidateEmail'))"
+            }
+          ]
+        },
+        "runAfter": {
+          "Initialize_CandidateEmail": ["Succeeded"]
+        }
+      },
+
+      "Create_SharePoint_Folder": {
+        "type": "OpenApiConnection",
+        "inputs": {
+          "host": {
+            "connectionName": "shared_sharepointonline",
+            "operationId": "CreateFolder",
+            "apiId": "/providers/Microsoft.PowerApps/apis/shared_sharepointonline"
+          },
+          "parameters": {
+            "dataset": "<<YOUR_SHAREPOINT_SITE_URL>>",
+            "table": "Recruitment",
+            "folderPath": "@variables('CandidateFolderPath')"
+          }
+        },
+        "runAfter": {
+          "Initialize_FolderPath": ["Succeeded"]
+        }
+      },
+
+      "Generate_Expiring_Upload_Link": {
+        "type": "OpenApiConnection",
+        "inputs": {
+          "host": {
+            "connectionName": "shared_sharepointonline",
+            "operationId": "HttpRequest",
+            "apiId": "/providers/Microsoft.PowerApps/apis/shared_sharepointonline"
+          },
+          "parameters": {
+            "dataset": "<<YOUR_SHAREPOINT_SITE_URL>>",
+            "parameters/method": "POST",
+            "parameters/uri": "_api/web/GetFolderByServerRelativeUrl('@{variables('CandidateFolderPath')}')/ListItemAllFields/ShareLink",
+            "parameters/headers": {
+              "Accept": "application/json;odata=verbose",
+              "Content-Type": "application/json;odata=verbose"
+            },
+            "parameters/body": {
+              "request": {
+                "createLink": true,
+                "settings": {
+                  "linkKind": 5,
+                  "expiration": "@{addMinutes(utcNow(), 30)}",
+                  "role": 2,
+                  "allowAnonymousAccess": true
+                }
+              }
+            }
+          }
+        },
+        "runAfter": {
+          "Create_SharePoint_Folder": ["Succeeded"]
+        }
+      },
+
+      "Parse_Link_Response": {
+        "type": "ParseJson",
+        "inputs": {
+          "content": "@body('Generate_Expiring_Upload_Link')",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "d": {
+                "type": "object",
+                "properties": {
+                  "ShareLink": {
+                    "type": "object",
+                    "properties": {
+                      "sharingLinkInfo": {
+                        "type": "object",
+                        "properties": {
+                          "Url": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "runAfter": {
+          "Generate_Expiring_Upload_Link": ["Succeeded"]
+        }
+      },
+
+      "Send_Upload_Email_To_Candidate": {
+        "type": "OpenApiConnection",
+        "inputs": {
+          "host": {
+            "connectionName": "shared_office365",
+            "operationId": "SendEmailV2",
+            "apiId": "/providers/Microsoft.PowerApps/apis/shared_office365"
+          },
+          "parameters": {
+            "emailMessage/To": "@variables('CandidateEmail')",
+            "emailMessage/Subject": "[Action Required] Please upload your documents – link expires in 30 minutes",
+            "emailMessage/Body": "<p>Dear @{outputs('Get_response_details')?['body/r1']},</p><p>Thank you for applying for the <strong>@{outputs('Get_response_details')?['body/r3']}</strong> position.</p><p>Please upload the following documents using the secure link below:</p><ul><li>CV / Résumé</li><li>Motivation letter</li><li>Copies of diplomas / certificates</li></ul><p>⚠️ <strong>This link will expire in 30 minutes.</strong></p><p><a href=\"@{body('Parse_Link_Response')?['d']?['ShareLink']?['sharingLinkInfo']?['Url']}\">Click here to upload your documents</a></p><p>If the link has expired, please reply to this email with the subject <em>[RE-SEND LINK]</em> and we will send a new one.</p><p>Best regards,<br/>HR Team</p>",
+            "emailMessage/Importance": "High"
+          }
+        },
+        "runAfter": {
+          "Parse_Link_Response": ["Succeeded"]
+        }
+      },
+
+      "Notify_HR_Team": {
+        "type": "OpenApiConnection",
+        "inputs": {
+          "host": {
+            "connectionName": "shared_teams",
+            "operationId": "PostMessageToConversation",
+            "apiId": "/providers/Microsoft.PowerApps/apis/shared_teams"
+          },
+          "parameters": {
+            "poster": "Flow bot",
+            "location": "Channel",
+            "body/recipient": "<<YOUR_TEAMS_CHANNEL_ID>>",
+            "body/messageBody": "📨 New application received:<br/>• <b>Name:</b> @{outputs('Get_response_details')?['body/r1']}<br/>• <b>Email:</b> @{variables('CandidateEmail')}<br/>• <b>Position:</b> @{outputs('Get_response_details')?['body/r3']}<br/>• <b>Folder:</b> @{variables('CandidateFolderPath')}<br/>• <b>Upload link sent:</b> ✅ (expires in 30 min)"
+          }
+        },
+        "runAfter": {
+          "Send_Upload_Email_To_Candidate": ["Succeeded"]
+        }
+      }
+    },
+
+    "triggers": {
+      "When_a_new_response_is_submitted": {
+        "type": "OpenApiConnectionWebhook",
+        "inputs": {
+          "host": {
+            "connectionName": "shared_microsoftforms",
+            "operationId": "FormResponseSubmitted",
+            "apiId": "/providers/Microsoft.PowerApps/apis/shared_microsoftforms"
+          },
+          "parameters": {
+            "form_id": "<<YOUR_FORM_ID>>"
+          }
+        }
+      }
+    },
+
+    "contentVersion": "1.0.0.0"
+  },
+
+  "parameters": {
+    "$connections": {
+      "value": {
+        "shared_microsoftforms": {
+          "connectionId": "/subscriptions/<<SUBSCRIPTION_ID>>/resourceGroups/<<RESOURCE_GROUP>>/providers/Microsoft.Web/connections/microsoftforms",
+          "connectionName": "microsoftforms",
+          "id": "/providers/Microsoft.PowerApps/apis/shared_microsoftforms"
+        },
+        "shared_sharepointonline": {
+          "connectionId": "/subscriptions/<<SUBSCRIPTION_ID>>/resourceGroups/<<RESOURCE_GROUP>>/providers/Microsoft.Web/connections/sharepointonline",
+          "connectionName": "sharepointonline",
+          "id": "/providers/Microsoft.PowerApps/apis/shared_sharepointonline"
+        },
+        "shared_office365": {
+          "connectionId": "/subscriptions/<<SUBSCRIPTION_ID>>/resourceGroups/<<RESOURCE_GROUP>>/providers/Microsoft.Web/connections/office365",
+          "connectionName": "office365",
+          "id": "/providers/Microsoft.PowerApps/apis/shared_office365"
+        },
+        "shared_teams": {
+          "connectionId": "/subscriptions/<<SUBSCRIPTION_ID>>/resourceGroups/<<RESOURCE_GROUP>>/providers/Microsoft.Web/connections/teams",
+          "connectionName": "teams",
+          "id": "/providers/Microsoft.PowerApps/apis/shared_teams"
+        }
+      }
+    }
+  },
+
+  "placeholders": {
+    "<<YOUR_FORM_ID>>": "Replace with the GUID of your Microsoft Form. Find it in the form URL after /forms/",
+    "<<YOUR_SHAREPOINT_SITE_URL>>": "Replace with your SharePoint site URL, e.g. https://contoso.sharepoint.com/sites/HR",
+    "<<JOB_FOLDER_NAME>>": "Replace with the job opening folder name inside the Recruitment library, e.g. 2024-Software-Engineer",
+    "<<YOUR_TEAMS_CHANNEL_ID>>": "Replace with the Teams channel ID. Find it via Teams > channel > Get link to channel",
+    "<<SUBSCRIPTION_ID>>": "Your Azure subscription ID (found in Azure Portal > Subscriptions)",
+    "<<RESOURCE_GROUP>>": "Your Azure resource group name"
+  }
+}
