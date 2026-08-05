@@ -63,7 +63,21 @@ HIMALAYAS_PAGES = 3          # 100/page
 
 ADZUNA_APP_ID = os.getenv("ADZUNA_APP_ID")
 ADZUNA_APP_KEY = os.getenv("ADZUNA_APP_KEY")
-ADZUNA_COUNTRIES = ["gb", "us", "nl", "de"]
+ADZUNA_COUNTRIES = [c.strip().lower() for c in
+                   os.getenv("ADZUNA_COUNTRIES", "gb,us,nl,de").split(",") if c.strip()]
+ADZUNA_MAX_DAYS_OLD = 30     # bound the window: without it every run re-pulls
+                             # the same aging postings and burns free-tier calls
+
+# Adzuna reports salary in the country's own currency but never names it, so the
+# figure is meaningless without this. Keys are Adzuna country codes, not locales.
+ADZUNA_CURRENCY = {
+    "gb": "GBP", "us": "USD", "ca": "CAD", "au": "AUD", "nz": "NZD",
+    "ch": "CHF", "pl": "PLN", "za": "ZAR", "sg": "SGD", "in": "INR",
+    "br": "BRL", "mx": "MXN",
+    "at": "EUR", "be": "EUR", "de": "EUR", "es": "EUR", "fr": "EUR",
+    "it": "EUR", "nl": "EUR",
+}
+
 RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
 
 COLUMNS = [
@@ -185,6 +199,32 @@ def as_tags(value):
     if isinstance(value, (list, tuple)):
         return ", ".join(str(v) for v in value if v)
     return str(value) if value else ""
+
+
+_REMOTE_RE = re.compile(
+    r"\b(remote|work from home|telecommut(e|ing)|distributed team|anywhere)\b", re.I)
+_NOT_REMOTE_RE = re.compile(
+    r"\b(no|not|non|without)[ -]remote\b|\bremote\b[ -]?(not|no)\b|"
+    r"\bon[ -]?site only\b|\bnot? remote work\b", re.I)
+
+
+def looks_remote(*texts):
+    """
+    Evidence-based remote detection for providers that have no remote flag.
+
+    Remote-only boards (Remotive, RemoteOK, Himalayas) can assert Remote=True
+    outright and Arbeitnow ships a real boolean. Adzuna has neither: it is a
+    general job board and `what=remote` is only a full-text match, which also
+    hits "no remote work" and "our remote offices". Asserting True there would
+    poison the one column a remote job search actually filters on, so it gets
+    derived from visible text and defaults to False when unproven.
+    """
+    blob = " ".join(str(t) for t in texts if t)
+    if not blob:
+        return False
+    if _NOT_REMOTE_RE.search(blob):
+        return False
+    return bool(_REMOTE_RE.search(blob))
 
 
 def to_ddmmyyyy(value):
@@ -421,7 +461,8 @@ async def fetch_adzuna(client, sem):
                 "results_per_page": 50,
                 "category": "accounting-finance-jobs",
                 "what": "remote",
-                "content-type": "application/json",
+                "max_days_old": ADZUNA_MAX_DAYS_OLD,
+                "sort_by": "date",
             },
         )
         if not data:
@@ -432,17 +473,19 @@ async def fetch_adzuna(client, sem):
             company = j.get("company") or {}
             loc = j.get("location") or {}
             cat = j.get("category") or {}
+            title = pick(j, "title")
+            loc_name = loc.get("display_name") if isinstance(loc, dict) else loc
             rows.append(build_row(
                 source=f"adzuna-{cc}",
                 native_id=pick(j, "id"),
-                title=pick(j, "title"),
+                title=title,
                 company=company.get("display_name") if isinstance(company, dict) else company,
-                location=loc.get("display_name") if isinstance(loc, dict) else loc,
-                remote=True,
+                location=loc_name,
+                remote=looks_remote(title, pick(j, "description"), loc_name),
                 category=cat.get("label") if isinstance(cat, dict) else cat,
                 smin=pick(j, "salary_min"),
                 smax=pick(j, "salary_max"),
-                currency=cc.upper(),
+                currency=ADZUNA_CURRENCY.get(cc, ""),
                 published=pick(j, "created"),
                 url=pick(j, "redirect_url"),
                 tags="",
@@ -636,6 +679,31 @@ def self_test():
           not classify("Account Manager", tags="finance")[0])
     check("matched keywords recorded",
           classify("Senior Accountant")[1].startswith("title:"))
+
+    print("Remote detection (Adzuna has no remote flag):")
+    check("fully remote", looks_remote("Remote Financial Accountant",
+                                       "Fully remote role", "Anywhere"))
+    check("work from home", looks_remote("Bookkeeper", "Work from home contract", "UK"))
+    check("'remote offices' still counts",
+          looks_remote("Tax Manager", "Based in our remote offices in Leeds", "Leeds"))
+    # The negations below are why this is not a plain substring test: `what=remote`
+    # is a full-text match, so Adzuna returns these alongside genuine remote roles.
+    check("'no remote work' rejected",
+          not looks_remote("Financial Analyst", "This position offers no remote work", "London"))
+    check("'not remote' rejected", not looks_remote("Credit Controller", "Not remote", "Berlin"))
+    check("'on-site only' rejected",
+          not looks_remote("Payroll Officer", "On-site only, Manchester", "Manchester"))
+    check("hybrid is not remote", not looks_remote("Auditor", "Hybrid, 2 days office", "Bristol"))
+    check("no evidence defaults False", not looks_remote("Treasury Analyst", "", "Amsterdam"))
+
+    print("Adzuna currency mapping:")
+    check("gb/us/nl/de map to real currencies",
+          [ADZUNA_CURRENCY.get(c, "") for c in ("gb", "us", "nl", "de")]
+          == ["GBP", "USD", "EUR", "EUR"])
+    check("unknown country yields blank, not a country code",
+          ADZUNA_CURRENCY.get("xx", "") == "")
+    check("every configured country has a currency",
+          all(ADZUNA_CURRENCY.get(c) for c in ADZUNA_COUNTRIES))
 
     print("Date normalization:")
     check("ISO-8601 string", to_ddmmyyyy("2026-07-01T10:00:00") == "01/07/2026")
