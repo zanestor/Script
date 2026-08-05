@@ -1,0 +1,794 @@
+"""
+FinanceJobs — collect remote/global finance jobs from legitimate job APIs.
+
+WHY NOT LINKEDIN
+----------------
+LinkedIn has no job-search API available to an individual developer:
+  * API auth is app-based (OAuth client id/secret), never email/password.
+  * The only self-serve products are "Sign In with LinkedIn" (OIDC) and
+    "Share on LinkedIn" — they return your own profile and let you post.
+    Neither carries a job-search scope.
+  * The Job Posting API is for ATS vendors pushing jobs INTO LinkedIn, and
+    sits behind the Talent Solutions Partner Program (closed to new partners).
+The unauthenticated /jobs-guest/ endpoint exists but rate-limits hard, exposes
+few fields, and breaches LinkedIn's User Agreement. This script therefore uses
+public job APIs that permit programmatic access.
+
+USAGE
+-----
+    pip install httpx pandas
+
+    python FinanceJobs              # collect + append to CSV
+    python FinanceJobs --probe      # dump raw API shapes (diagnose schema drift)
+    python FinanceJobs --self-test  # offline checks, no network
+
+ENV (all optional)
+------------------
+    JOBS_OUTPUT_CSV   output path      (default: ./finance_jobs.csv)
+    JOBS_CONTACT      contact in UA    (default: none)
+    ADZUNA_APP_ID / ADZUNA_APP_KEY     enables Adzuna
+    RAPIDAPI_KEY                       enables JSearch
+"""
+
+import os
+import re
+import sys
+import json
+import asyncio
+import hashlib
+from datetime import date, datetime
+
+import httpx
+import pandas as pd
+
+# ========== CONFIGURATION ==========
+
+OUTPUT_CSV_FILE = os.getenv(
+    "JOBS_OUTPUT_CSV",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "finance_jobs.csv"),
+)
+
+CONTACT = os.getenv("JOBS_CONTACT", "").strip()
+USER_AGENT = (
+    f"FinanceJobsCollector/1.0 (+personal job search; {CONTACT})"
+    if CONTACT
+    else "FinanceJobsCollector/1.0 (+personal job search)"
+)
+
+MAX_CONCURRENCY = 4          # be polite; these are free endpoints
+MAX_RETRIES = 3
+REQUEST_TIMEOUT = 30
+ARBEITNOW_PAGES = 3          # ~100 jobs/page
+HIMALAYAS_PAGES = 3          # 100/page
+
+ADZUNA_APP_ID = os.getenv("ADZUNA_APP_ID")
+ADZUNA_APP_KEY = os.getenv("ADZUNA_APP_KEY")
+ADZUNA_COUNTRIES = [c.strip().lower() for c in
+                   os.getenv("ADZUNA_COUNTRIES", "gb,us,nl,de").split(",") if c.strip()]
+ADZUNA_MAX_DAYS_OLD = 30     # bound the window: without it every run re-pulls
+                             # the same aging postings and burns free-tier calls
+
+# Adzuna reports salary in the country's own currency but never names it, so the
+# figure is meaningless without this. Keys are Adzuna country codes, not locales.
+ADZUNA_CURRENCY = {
+    "gb": "GBP", "us": "USD", "ca": "CAD", "au": "AUD", "nz": "NZD",
+    "ch": "CHF", "pl": "PLN", "za": "ZAR", "sg": "SGD", "in": "INR",
+    "br": "BRL", "mx": "MXN",
+    "at": "EUR", "be": "EUR", "de": "EUR", "es": "EUR", "fr": "EUR",
+    "it": "EUR", "nl": "EUR",
+}
+
+RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
+
+COLUMNS = [
+    "JobID", "Source", "Title", "Company", "Location", "Remote", "Category",
+    "SalaryMin", "SalaryMax", "SalaryCurrency", "PublishedDate",
+    "FirstSeen", "LastSeen", "URL", "Tags", "MatchedKeywords",
+]
+
+DATE_COLUMNS = ["PublishedDate", "FirstSeen", "LastSeen"]
+
+# ========== FINANCE CLASSIFICATION ==========
+# Word-boundary regexes, not substrings: "\btax\b" must not fire on "syntax",
+# and "\baccount(ant|ing)\b" must not fire on "Account Manager" (a sales role).
+
+POSITIVE_PATTERNS = [
+    r"\bcfo\b", r"\bchief financial officer\b",
+    r"\bfinanc(e|es|ial|ials)\b",
+    r"\baccount(ant|ants|ancy|ing)\b",
+    r"\baccounts (payable|receivable)\b",
+    r"\bbookkeep(er|ers|ing)\b",
+    r"\bcontroller\b", r"\bcomptroller\b",
+    r"\btreasur(y|er)\b",
+    r"\baudit(s|or|ors|ing)?\b",
+    r"\bpayroll\b",
+    r"\btax(es|ation)?\b",
+    r"\bfp&a\b",
+    r"\bactuar(y|ial|ies)\b",
+    r"\bunderwrit(er|ers|ing)\b",
+    r"\bcredit (analyst|risk|control|controller)\b",
+    r"\binvestment(s)?\b",
+    r"\bbudget(s|ing)?\b",
+    r"\bfund accounting\b",
+    r"\b(ifrs|gaap|cpa|acca|cima|cfa)\b",
+    r"\bbilling\b", r"\binvoic(e|es|ing)\b",
+    r"\breconciliation(s)?\b",
+    r"\bgrants? (finance|accountant|management)\b",
+]
+
+# A negative in the TITLE rejects the row outright, even on a positive hit.
+# "Account Manager"/"Account Executive" are sales; Remotive's category is
+# "finance-legal", so it ships lawyers that must be filtered out.
+NEGATIVE_PATTERNS = [
+    r"\baccount (manager|executive|director|supervisor|coordinator)\b",
+    r"\bsales\b",
+    r"\battorney(s)?\b", r"\blawyer(s)?\b", r"\bparalegal\b",
+    r"\b(legal|general|corporate|associate) counsel\b", r"\bsolicitor\b",
+    r"\blegal\b",
+    r"\brecruit(er|ers|ing|ment)\b",
+    r"\bbusiness development\b",
+    r"\bcustomer success\b",
+    r"\bmarketing\b",
+]
+
+POSITIVE_RE = [re.compile(p, re.I) for p in POSITIVE_PATTERNS]
+NEGATIVE_RE = [re.compile(p, re.I) for p in NEGATIVE_PATTERNS]
+
+
+def _hits(text, patterns):
+    """Return the distinct matched substrings for the given patterns."""
+    if not text:
+        return []
+    found = []
+    for rx in patterns:
+        m = rx.search(text)
+        if m and m.group(0).lower() not in found:
+            found.append(m.group(0).lower())
+    return found
+
+
+def classify(title, tags="", category=""):
+    """
+    Decide whether a posting is a finance role.
+
+    Returns (is_finance, matched_keywords). matched_keywords is prefixed with
+    how it matched ("title:" or "tags:") so the filter can be tuned by reading
+    the CSV instead of guessing.
+
+    Rule:
+      * any negative in the title  -> reject, no matter what else matched
+      * positive in the title      -> accept
+      * positive in tags/category  -> accept (title already known negative-clean)
+    """
+    title = title or ""
+    blob_tags = " ".join(filter(None, [tags or "", category or ""]))
+
+    if _hits(title, NEGATIVE_RE):
+        return False, ""
+
+    title_hits = _hits(title, POSITIVE_RE)
+    if title_hits:
+        return True, "title:" + ",".join(title_hits)
+
+    tag_hits = _hits(blob_tags, POSITIVE_RE)
+    if tag_hits:
+        return True, "tags:" + ",".join(tag_hits)
+
+    return False, ""
+
+
+# ========== HELPERS ==========
+
+def pick(record, *keys, default=None):
+    """
+    First non-empty value among several candidate key names.
+
+    These are third-party APIs whose field names drift between versions, so
+    every adapter accepts more than one plausible spelling rather than
+    hard-failing on a rename.
+    """
+    for k in keys:
+        if k in record:
+            v = record[k]
+            if v not in (None, "", [], {}):
+                return v
+    return default
+
+
+def as_tags(value):
+    if isinstance(value, (list, tuple)):
+        return ", ".join(str(v) for v in value if v)
+    return str(value) if value else ""
+
+
+_REMOTE_RE = re.compile(
+    r"\b(remote|work from home|telecommut(e|ing)|distributed team|anywhere)\b", re.I)
+_NOT_REMOTE_RE = re.compile(
+    r"\b(no|not|non|without)[ -]remote\b|\bremote\b[ -]?(not|no)\b|"
+    r"\bon[ -]?site only\b|\bnot? remote work\b", re.I)
+
+
+def looks_remote(*texts):
+    """
+    Evidence-based remote detection for providers that have no remote flag.
+
+    Remote-only boards (Remotive, RemoteOK, Himalayas) can assert Remote=True
+    outright and Arbeitnow ships a real boolean. Adzuna has neither: it is a
+    general job board and `what=remote` is only a full-text match, which also
+    hits "no remote work" and "our remote offices". Asserting True there would
+    poison the one column a remote job search actually filters on, so it gets
+    derived from visible text and defaults to False when unproven.
+    """
+    blob = " ".join(str(t) for t in texts if t)
+    if not blob:
+        return False
+    if _NOT_REMOTE_RE.search(blob):
+        return False
+    return bool(_REMOTE_RE.search(blob))
+
+
+def to_ddmmyyyy(value):
+    """
+    Normalize any provider date into the repo's dd/mm/yyyy convention.
+
+    Providers are inconsistent: Remotive and Himalayas send ISO-8601 strings,
+    Arbeitnow sends an epoch integer. A bare int handed to pd.to_datetime is
+    read as NANOSECONDS and silently yields 1970-01-01, so numeric values are
+    given an explicit unit here.
+    """
+    if value in (None, "", []):
+        return ""
+
+    numeric = None
+    if isinstance(value, bool):
+        return ""
+    if isinstance(value, (int, float)):
+        numeric = float(value)
+    elif isinstance(value, str) and value.strip().isdigit():
+        numeric = float(value.strip())
+
+    try:
+        if numeric is not None:
+            # Heuristic on magnitude: seconds ~1e9, milliseconds ~1e12.
+            unit = "s" if abs(numeric) < 1e11 else "ms"
+            dt = pd.to_datetime(numeric, unit=unit, errors="coerce", utc=True)
+        else:
+            dt = pd.to_datetime(value, errors="coerce", utc=True)
+        if pd.isna(dt):
+            return ""
+        return dt.strftime("%d/%m/%Y")
+    except Exception:
+        return ""
+
+
+def make_job_id(source, native_id, company, title, url):
+    if native_id:
+        return f"{source}:{native_id}"
+    digest = hashlib.sha1(
+        "|".join([source, str(company), str(title), str(url)]).encode("utf-8")
+    ).hexdigest()[:12]
+    return f"{source}:{digest}"
+
+
+def build_row(source, native_id, title, company, location, remote, category,
+              smin, smax, currency, published, url, tags):
+    """Normalize one provider record, returning None if it isn't a finance role."""
+    tags_str = as_tags(tags)
+    is_finance, matched = classify(title, tags_str, category)
+    if not is_finance:
+        return None
+    today = date.today().strftime("%d/%m/%Y")
+    return {
+        "JobID": make_job_id(source, native_id, company, title, url),
+        "Source": source,
+        "Title": (title or "").strip(),
+        "Company": (str(company) or "").strip(),
+        "Location": (str(location) if location else "").strip(),
+        "Remote": bool(remote),
+        "Category": (str(category) if category else "").strip(),
+        "SalaryMin": smin,
+        "SalaryMax": smax,
+        "SalaryCurrency": currency or "",
+        "PublishedDate": to_ddmmyyyy(published),
+        "FirstSeen": today,
+        "LastSeen": today,
+        "URL": (str(url) if url else "").strip(),
+        "Tags": tags_str,
+        "MatchedKeywords": matched,
+    }
+
+
+async def fetch_json(client, url, semaphore, headers=None, params=None):
+    """GET with bounded concurrency and exponential backoff. 404 short-circuits."""
+    hdrs = {"User-Agent": USER_AGENT, "Accept": "application/json"}
+    if headers:
+        hdrs.update(headers)
+
+    async with semaphore:
+        for attempt in range(1, MAX_RETRIES + 1):
+            try:
+                r = await client.get(url, headers=hdrs, params=params,
+                                     timeout=REQUEST_TIMEOUT)
+                if r.status_code == 404:
+                    print(f"   404 {url} — skipping retries")
+                    return None
+                r.raise_for_status()
+                return r.json()
+            except Exception as e:
+                print(f"   attempt {attempt}/{MAX_RETRIES} failed for {url}: "
+                      f"{type(e).__name__}: {e}")
+                if attempt == MAX_RETRIES:
+                    return None
+                await asyncio.sleep(2 * attempt)
+    return None
+
+
+# ========== PROVIDER ADAPTERS ==========
+# Each returns a list of normalized rows (already finance-filtered).
+
+async def fetch_remotive(client, sem):
+    data = await fetch_json(
+        client, "https://remotive.com/api/remote-jobs",
+        sem, params={"category": "finance-legal"},
+    )
+    if not data:
+        return []
+    jobs = data.get("jobs", []) if isinstance(data, dict) else data
+    rows = []
+    for j in jobs:
+        if not isinstance(j, dict):
+            continue
+        rows.append(build_row(
+            source="remotive",
+            native_id=pick(j, "id"),
+            title=pick(j, "title"),
+            company=pick(j, "company_name", "company"),
+            location=pick(j, "candidate_required_location", "location"),
+            remote=True,
+            category=pick(j, "category"),
+            smin=None, smax=None,
+            currency=pick(j, "salary"),
+            published=pick(j, "publication_date", "published_at", "created_at"),
+            url=pick(j, "url", "job_url"),
+            tags=pick(j, "tags", default=[]),
+        ))
+    return [r for r in rows if r]
+
+
+async def fetch_remoteok(client, sem):
+    # RemoteOK rejects generic user agents; element [0] is a legal notice.
+    data = await fetch_json(client, "https://remoteok.com/api", sem)
+    if not data or not isinstance(data, list):
+        return []
+    rows = []
+    for j in data:
+        if not isinstance(j, dict) or "legal" in j:
+            continue
+        rows.append(build_row(
+            source="remoteok",
+            native_id=pick(j, "id", "slug"),
+            title=pick(j, "position", "title"),
+            company=pick(j, "company"),
+            location=pick(j, "location"),
+            remote=True,
+            category="",
+            smin=pick(j, "salary_min"),
+            smax=pick(j, "salary_max"),
+            currency="USD" if pick(j, "salary_min") else "",
+            published=pick(j, "date", "created_at"),
+            url=pick(j, "url", "apply_url"),
+            tags=pick(j, "tags", default=[]),
+        ))
+    return [r for r in rows if r]
+
+
+async def fetch_arbeitnow(client, sem):
+    rows = []
+    for page in range(1, ARBEITNOW_PAGES + 1):
+        data = await fetch_json(
+            client, "https://www.arbeitnow.com/api/job-board-api",
+            sem, params={"page": page},
+        )
+        if not data:
+            break
+        jobs = data.get("data", []) if isinstance(data, dict) else data
+        if not jobs:
+            break
+        for j in jobs:
+            if not isinstance(j, dict):
+                continue
+            rows.append(build_row(
+                source="arbeitnow",
+                native_id=pick(j, "slug", "id"),
+                title=pick(j, "title"),
+                company=pick(j, "company_name", "company"),
+                location=pick(j, "location"),
+                remote=bool(pick(j, "remote", default=False)),
+                category=as_tags(pick(j, "job_types", default=[])),
+                smin=None, smax=None, currency="",
+                published=pick(j, "created_at", "created"),
+                url=pick(j, "url"),
+                tags=pick(j, "tags", default=[]),
+            ))
+    return [r for r in rows if r]
+
+
+async def fetch_himalayas(client, sem):
+    rows = []
+    for page in range(HIMALAYAS_PAGES):
+        data = await fetch_json(
+            client, "https://himalayas.app/jobs/api",
+            sem, params={"limit": 100, "offset": page * 100},
+        )
+        if not data:
+            break
+        jobs = data.get("jobs", []) if isinstance(data, dict) else data
+        if not jobs:
+            break
+        for j in jobs:
+            if not isinstance(j, dict):
+                continue
+            rows.append(build_row(
+                source="himalayas",
+                native_id=pick(j, "guid", "id"),
+                title=pick(j, "title"),
+                company=pick(j, "companyName", "company_name", "company"),
+                location=as_tags(pick(j, "locationRestrictions", "location",
+                                      default=[])),
+                remote=True,
+                category=as_tags(pick(j, "categories", default=[])),
+                smin=pick(j, "minSalary", "salary_min"),
+                smax=pick(j, "maxSalary", "salary_max"),
+                currency=pick(j, "currency", default=""),
+                published=pick(j, "pubDate", "publishedDate", "created_at"),
+                url=pick(j, "applicationLink", "url", "guid"),
+                tags=pick(j, "seniority", "tags", default=[]),
+            ))
+    return [r for r in rows if r]
+
+
+async def fetch_adzuna(client, sem):
+    """Optional — needs ADZUNA_APP_ID / ADZUNA_APP_KEY. Free tier: 1000 calls/mo."""
+    if not (ADZUNA_APP_ID and ADZUNA_APP_KEY):
+        return []
+    rows = []
+    for cc in ADZUNA_COUNTRIES:
+        data = await fetch_json(
+            client, f"https://api.adzuna.com/v1/api/jobs/{cc}/search/1", sem,
+            params={
+                "app_id": ADZUNA_APP_ID,
+                "app_key": ADZUNA_APP_KEY,
+                "results_per_page": 50,
+                "category": "accounting-finance-jobs",
+                "what": "remote",
+                "max_days_old": ADZUNA_MAX_DAYS_OLD,
+                "sort_by": "date",
+            },
+        )
+        if not data:
+            continue
+        for j in data.get("results", []):
+            if not isinstance(j, dict):
+                continue
+            company = j.get("company") or {}
+            loc = j.get("location") or {}
+            cat = j.get("category") or {}
+            title = pick(j, "title")
+            loc_name = loc.get("display_name") if isinstance(loc, dict) else loc
+            rows.append(build_row(
+                source=f"adzuna-{cc}",
+                native_id=pick(j, "id"),
+                title=title,
+                company=company.get("display_name") if isinstance(company, dict) else company,
+                location=loc_name,
+                remote=looks_remote(title, pick(j, "description"), loc_name),
+                category=cat.get("label") if isinstance(cat, dict) else cat,
+                smin=pick(j, "salary_min"),
+                smax=pick(j, "salary_max"),
+                currency=ADZUNA_CURRENCY.get(cc, ""),
+                published=pick(j, "created"),
+                url=pick(j, "redirect_url"),
+                tags="",
+            ))
+    return [r for r in rows if r]
+
+
+async def fetch_jsearch(client, sem):
+    """Optional — needs RAPIDAPI_KEY. Aggregates Google for Jobs."""
+    if not RAPIDAPI_KEY:
+        return []
+    data = await fetch_json(
+        client, "https://jsearch.p.rapidapi.com/search", sem,
+        headers={
+            "X-RapidAPI-Key": RAPIDAPI_KEY,
+            "X-RapidAPI-Host": "jsearch.p.rapidapi.com",
+        },
+        params={"query": "finance accountant remote", "page": "1",
+                "num_pages": "3", "remote_jobs_only": "true"},
+    )
+    if not data:
+        return []
+    rows = []
+    for j in data.get("data", []):
+        if not isinstance(j, dict):
+            continue
+        rows.append(build_row(
+            source="jsearch",
+            native_id=pick(j, "job_id"),
+            title=pick(j, "job_title"),
+            company=pick(j, "employer_name"),
+            location=pick(j, "job_country", "job_city"),
+            remote=bool(pick(j, "job_is_remote", default=True)),
+            category=pick(j, "job_employment_type", default=""),
+            smin=pick(j, "job_min_salary"),
+            smax=pick(j, "job_max_salary"),
+            currency=pick(j, "job_salary_currency", default=""),
+            published=pick(j, "job_posted_at_datetime_utc"),
+            url=pick(j, "job_apply_link", "job_google_link"),
+            tags="",
+        ))
+    return [r for r in rows if r]
+
+
+PROVIDERS = [
+    ("remotive", fetch_remotive),
+    ("remoteok", fetch_remoteok),
+    ("arbeitnow", fetch_arbeitnow),
+    ("himalayas", fetch_himalayas),
+    ("adzuna", fetch_adzuna),
+    ("jsearch", fetch_jsearch),
+]
+
+
+async def run_provider(name, fn, client, sem):
+    """One provider failing must never abort the whole run."""
+    try:
+        rows = await fn(client, sem)
+        print(f"   {name:12s} {len(rows):4d} finance roles")
+        return rows
+    except Exception as e:
+        print(f"   {name:12s} FAILED — {type(e).__name__}: {e}")
+        return []
+
+
+# ========== CSV MERGE ==========
+
+def merge_and_save(new_rows, csv_path):
+    """
+    Dedup-append on JobID.
+
+    Note this deliberately differs from Taux_BCC's bare drop_duplicates():
+    a job re-fetched tomorrow carries a new LastSeen, so full-row dedup would
+    treat it as new and grow the CSV without bound. Dedup on JobID instead,
+    keeping the newest field values but restoring the original FirstSeen.
+    """
+    new_df = pd.DataFrame(new_rows, columns=COLUMNS)
+
+    existing_df = pd.DataFrame(columns=COLUMNS)
+    if os.path.exists(csv_path):
+        try:
+            existing_df = pd.read_csv(csv_path, dtype={"JobID": str})
+            for col in COLUMNS:
+                if col not in existing_df.columns:
+                    existing_df[col] = None
+            existing_df = existing_df[COLUMNS]
+        except Exception as e:
+            print(f"Could not read existing CSV ({e}); starting fresh.")
+
+    if existing_df.empty:
+        combined = new_df
+    elif new_df.empty:
+        combined = existing_df
+    else:
+        combined = pd.concat([existing_df, new_df], ignore_index=True)
+
+    if combined.empty:
+        print("No rows to write.")
+        return combined
+
+    # Earliest FirstSeen / latest LastSeen per job, compared as real dates.
+    first_dt = pd.to_datetime(combined["FirstSeen"], format="%d/%m/%Y", errors="coerce")
+    last_dt = pd.to_datetime(combined["LastSeen"], format="%d/%m/%Y", errors="coerce")
+    spans = pd.DataFrame({
+        "JobID": combined["JobID"], "_first": first_dt, "_last": last_dt,
+    }).groupby("JobID", as_index=False).agg(_first=("_first", "min"),
+                                            _last=("_last", "max"))
+
+    # keep="last" retains the freshest title/salary for a job seen again.
+    deduped = combined.drop_duplicates(subset=["JobID"], keep="last").copy()
+    deduped = deduped.merge(spans, on="JobID", how="left")
+    deduped["FirstSeen"] = deduped["_first"].dt.strftime("%d/%m/%Y")
+    deduped["LastSeen"] = deduped["_last"].dt.strftime("%d/%m/%Y")
+    deduped = deduped.drop(columns=["_first", "_last"])
+
+    deduped = deduped.sort_values(by=["FirstSeen", "Source", "Company"],
+                                  na_position="last")[COLUMNS]
+    deduped.to_csv(csv_path, index=False)
+
+    added = len(deduped) - len(existing_df)
+    print(f"\nCSV updated: {csv_path}")
+    print(f"   {len(deduped)} jobs total ({added} new this run)")
+    return deduped
+
+
+# ========== PROBE MODE ==========
+
+async def probe():
+    """Dump raw shapes so schema drift can be diagnosed without guesswork."""
+    targets = [
+        ("remotive", "https://remotive.com/api/remote-jobs?category=finance-legal", "jobs"),
+        ("remoteok", "https://remoteok.com/api", None),
+        ("arbeitnow", "https://www.arbeitnow.com/api/job-board-api", "data"),
+        ("himalayas", "https://himalayas.app/jobs/api?limit=3", "jobs"),
+    ]
+    sem = asyncio.Semaphore(MAX_CONCURRENCY)
+    async with httpx.AsyncClient(follow_redirects=True) as client:
+        for name, url, key in targets:
+            print("=" * 68)
+            print(name, url)
+            print("=" * 68)
+            data = await fetch_json(client, url, sem)
+            if data is None:
+                print("  no data\n")
+                continue
+            if isinstance(data, dict):
+                print("  top-level keys:", list(data.keys()))
+                items = data.get(key, []) if key else []
+            else:
+                print(f"  top-level list, len={len(data)}")
+                items = data
+            sample = next((i for i in items if isinstance(i, dict) and "legal" not in i), None)
+            if sample:
+                print("  first record fields:")
+                for k, v in sample.items():
+                    prev = str(v)
+                    print(f"    {k:32s} {type(v).__name__:8s} {prev[:60]}")
+            print()
+
+
+# ========== SELF-TEST (offline) ==========
+
+def self_test():
+    """Offline checks for classification and CSV merge. No network required."""
+    import tempfile
+    failures = []
+
+    def check(label, cond):
+        print(f"  {'PASS' if cond else 'FAIL'}  {label}")
+        if not cond:
+            failures.append(label)
+
+    print("Classifier — should ACCEPT:")
+    for t in ["Senior Accountant", "Finance Manager", "Financial Controller",
+              "Payroll Specialist", "Tax Analyst", "FP&A Lead",
+              "Accounts Payable Clerk", "Bookkeeper", "Treasury Analyst",
+              "Internal Auditor", "Grants Accountant", "CFO"]:
+        check(f"accept {t!r}", classify(t)[0])
+
+    print("Classifier — should REJECT:")
+    for t in ["Account Manager", "Account Executive", "Enterprise Sales Lead",
+              "Corporate Attorney", "Paralegal", "Legal Counsel",
+              "Technical Recruiter", "Software Engineer", "Product Designer",
+              "Marketing Manager", "Syntax Researcher", "Taxonomy Specialist",
+              "Customer Success Manager"]:
+        check(f"reject {t!r}", not classify(t)[0])
+
+    print("Classifier — tag fallback:")
+    check("accept via tags", classify("Remote Specialist", tags="finance, ifrs")[0])
+    check("negative title beats positive tags",
+          not classify("Account Manager", tags="finance")[0])
+    check("matched keywords recorded",
+          classify("Senior Accountant")[1].startswith("title:"))
+
+    print("Remote detection (Adzuna has no remote flag):")
+    check("fully remote", looks_remote("Remote Financial Accountant",
+                                       "Fully remote role", "Anywhere"))
+    check("work from home", looks_remote("Bookkeeper", "Work from home contract", "UK"))
+    check("'remote offices' still counts",
+          looks_remote("Tax Manager", "Based in our remote offices in Leeds", "Leeds"))
+    # The negations below are why this is not a plain substring test: `what=remote`
+    # is a full-text match, so Adzuna returns these alongside genuine remote roles.
+    check("'no remote work' rejected",
+          not looks_remote("Financial Analyst", "This position offers no remote work", "London"))
+    check("'not remote' rejected", not looks_remote("Credit Controller", "Not remote", "Berlin"))
+    check("'on-site only' rejected",
+          not looks_remote("Payroll Officer", "On-site only, Manchester", "Manchester"))
+    check("hybrid is not remote", not looks_remote("Auditor", "Hybrid, 2 days office", "Bristol"))
+    check("no evidence defaults False", not looks_remote("Treasury Analyst", "", "Amsterdam"))
+
+    print("Adzuna currency mapping:")
+    check("gb/us/nl/de map to real currencies",
+          [ADZUNA_CURRENCY.get(c, "") for c in ("gb", "us", "nl", "de")]
+          == ["GBP", "USD", "EUR", "EUR"])
+    check("unknown country yields blank, not a country code",
+          ADZUNA_CURRENCY.get("xx", "") == "")
+    check("every configured country has a currency",
+          all(ADZUNA_CURRENCY.get(c) for c in ADZUNA_COUNTRIES))
+
+    print("Date normalization:")
+    check("ISO-8601 string", to_ddmmyyyy("2026-07-01T10:00:00") == "01/07/2026")
+    check("ISO-8601 with zone", to_ddmmyyyy("2026-06-15T08:00:00+00:00") == "15/06/2026")
+    # Arbeitnow sends epoch seconds; a bare int is read as nanoseconds by
+    # pd.to_datetime and would silently collapse to 1970-01-01.
+    check("epoch seconds as int", to_ddmmyyyy(1751328000) == "01/07/2025")
+    check("epoch seconds as string", to_ddmmyyyy("1751328000") == "01/07/2025")
+    check("epoch milliseconds", to_ddmmyyyy(1751328000000) == "01/07/2025")
+    check("empty date is blank", to_ddmmyyyy(None) == "" and to_ddmmyyyy("") == "")
+    check("garbage date is blank", to_ddmmyyyy("not a date") == "")
+
+    print("CSV merge:")
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "jobs.csv")
+        row = build_row("test", "1", "Senior Accountant", "ACME", "Remote",
+                        True, "", None, None, "", "2026-01-15",
+                        "https://x.test/1", ["finance"])
+        check("build_row returns a finance row", row is not None)
+        check("build_row filters non-finance",
+              build_row("test", "2", "Account Manager", "ACME", "Remote", True,
+                        "", None, None, "", "2026-01-15", "https://x.test/2", []) is None)
+        check("PublishedDate is dd/mm/yyyy", row["PublishedDate"] == "15/01/2026")
+
+        # Pin the seen-dates so the assertions do not depend on today's date.
+        row["FirstSeen"] = row["LastSeen"] = "15/01/2026"
+        first = merge_and_save([row], path)
+        check("first run writes 1 row", len(first) == 1)
+
+        # Same job seen again on a strictly later day.
+        row2 = dict(row)
+        row2["FirstSeen"] = row2["LastSeen"] = "20/02/2026"
+        second = merge_and_save([row2], path)
+        check("second run does not duplicate", len(second) == 1)
+        check("FirstSeen preserved from run 1",
+              second.iloc[0]["FirstSeen"] == "15/01/2026")
+        check("LastSeen advanced to run 2",
+              second.iloc[0]["LastSeen"] == "20/02/2026")
+
+        third = merge_and_save([], path)
+        check("empty run leaves CSV intact", len(third) == 1)
+
+        distinct = build_row("test", "9", "Tax Manager", "OTHER", "Remote", True,
+                             "", None, None, "", "2026-03-01",
+                             "https://x.test/9", [])
+        fourth = merge_and_save([distinct], path)
+        check("distinct job is appended", len(fourth) == 2)
+
+    print(f"\n{'ALL CHECKS PASSED' if not failures else str(len(failures)) + ' FAILURE(S): ' + '; '.join(failures)}")
+    return 1 if failures else 0
+
+
+# ========== MAIN ==========
+
+async def collect():
+    print(f"Collecting finance jobs — {datetime.now():%Y-%m-%d %H:%M:%S}")
+    enabled = []
+    for name, fn in PROVIDERS:
+        if name == "adzuna" and not (ADZUNA_APP_ID and ADZUNA_APP_KEY):
+            continue
+        if name == "jsearch" and not RAPIDAPI_KEY:
+            continue
+        enabled.append((name, fn))
+    print(f"Providers: {', '.join(n for n, _ in enabled)}\n")
+
+    sem = asyncio.Semaphore(MAX_CONCURRENCY)
+    async with httpx.AsyncClient(follow_redirects=True) as client:
+        results = await asyncio.gather(
+            *[run_provider(n, f, client, sem) for n, f in enabled]
+        )
+
+    rows = [r for group in results for r in group]
+    if not rows:
+        print("\nNo finance roles returned. Run with --probe to check the APIs.")
+    merge_and_save(rows, OUTPUT_CSV_FILE)
+
+
+def main():
+    if "--self-test" in sys.argv:
+        sys.exit(self_test())
+    if "--probe" in sys.argv:
+        asyncio.run(probe())
+        return
+    asyncio.run(collect())
+
+
+if __name__ == "__main__":
+    main()
