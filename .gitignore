@@ -1,0 +1,15 @@
+# Python build artifacts
+__pycache__/
+*.py[cod]
+
+# FinanceJobs output — data, not source. Override the path with JOBS_OUTPUT_CSV.
+finance_jobs.csv
+
+# Credentials never belong in this repo. FinanceJobs and Taux_BCC read every
+# secret from environment variables (os.getenv) precisely so that nothing has
+# to be committed.
+.env
+.env.*
+ADZUNA
+*credentials*
+*secret*
