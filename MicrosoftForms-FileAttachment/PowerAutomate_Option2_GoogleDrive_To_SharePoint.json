@@ -1,0 +1,193 @@
+{
+  "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "description": "Option 2 – When a file is created in a Google Drive folder (e.g. from a Google Form), copy it to a SharePoint document library and notify the HR team.",
+    "author": "HR Automation",
+    "version": "1.0.0",
+    "connector_note": "The Google Drive connector is a PREMIUM connector. You need a Power Automate Per User or Per Flow plan, or a Power Apps Premium licence.",
+    "instructions": [
+      "1. Import this flow in Power Automate (My flows > Import > Import Package).",
+      "2. Update every placeholder enclosed in << >> with your actual values.",
+      "3. Re-authenticate the Google Drive, SharePoint, and Office 365 Outlook connections.",
+      "4. Save and test the flow by uploading a file to the monitored Google Drive folder.",
+      "5. Optional: Enable 'Delete source file' action to remove files from Google Drive after copying."
+    ]
+  },
+  "definition": {
+    "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+    "actions": {
+      "Get_File_Content_From_Google_Drive": {
+        "type": "OpenApiConnection",
+        "inputs": {
+          "host": {
+            "connectionName": "shared_googledrive",
+            "operationId": "GetFileContent",
+            "apiId": "/providers/Microsoft.PowerApps/apis/shared_googledrive"
+          },
+          "parameters": {
+            "id": "@triggerOutputs()?['body/Id']"
+          }
+        },
+        "runAfter": {}
+      },
+
+      "Initialize_DeleteSourceFile": {
+        "type": "InitializeVariable",
+        "inputs": {
+          "variables": [
+            {
+              "name": "DeleteSourceFile",
+              "type": "boolean",
+              "value": false
+            }
+          ]
+        },
+        "runAfter": {
+          "Get_File_Content_From_Google_Drive": ["Succeeded"]
+        }
+      },
+
+      "Initialize_SharePoint_FolderPath": {
+        "type": "InitializeVariable",
+        "inputs": {
+          "variables": [
+            {
+              "name": "SharePointFolderPath",
+              "type": "string",
+              "value": "/Recruitment/<<JOB_FOLDER_NAME>>"
+            }
+          ]
+        },
+        "runAfter": {
+          "Initialize_DeleteSourceFile": ["Succeeded"]
+        }
+      },
+
+      "Create_File_In_SharePoint": {
+        "type": "OpenApiConnection",
+        "inputs": {
+          "host": {
+            "connectionName": "shared_sharepointonline",
+            "operationId": "CreateFile",
+            "apiId": "/providers/Microsoft.PowerApps/apis/shared_sharepointonline"
+          },
+          "parameters": {
+            "dataset": "<<YOUR_SHAREPOINT_SITE_URL>>",
+            "folderPath": "@variables('SharePointFolderPath')",
+            "name": "@triggerOutputs()?['body/Name']",
+            "body": "@body('Get_File_Content_From_Google_Drive')"
+          }
+        },
+        "runAfter": {
+          "Initialize_SharePoint_FolderPath": ["Succeeded"]
+        }
+      },
+
+      "Condition_Delete_Source_File": {
+        "type": "If",
+        "expression": {
+          "equals": [
+            "@variables('DeleteSourceFile')",
+            true
+          ]
+        },
+        "actions": {
+          "Delete_File_From_Google_Drive": {
+            "type": "OpenApiConnection",
+            "inputs": {
+              "host": {
+                "connectionName": "shared_googledrive",
+                "operationId": "DeleteFile",
+                "apiId": "/providers/Microsoft.PowerApps/apis/shared_googledrive"
+              },
+              "parameters": {
+                "id": "@triggerOutputs()?['body/Id']"
+              }
+            }
+          }
+        },
+        "else": {
+          "actions": {}
+        },
+        "runAfter": {
+          "Create_File_In_SharePoint": ["Succeeded"]
+        }
+      },
+
+      "Send_HR_Notification_Email": {
+        "type": "OpenApiConnection",
+        "inputs": {
+          "host": {
+            "connectionName": "shared_office365",
+            "operationId": "SendEmailV2",
+            "apiId": "/providers/Microsoft.PowerApps/apis/shared_office365"
+          },
+          "parameters": {
+            "emailMessage/To": "<<HR_TEAM_EMAIL>>",
+            "emailMessage/Subject": "[Recruitment] New document uploaded: @{triggerOutputs()?['body/Name']}",
+            "emailMessage/Body": "<p>A new document has been received and saved to SharePoint.</p><ul><li><b>File name:</b> @{triggerOutputs()?['body/Name']}</li><li><b>Source:</b> Google Drive – @{triggerOutputs()?['body/Path']}</li><li><b>Destination:</b> SharePoint → @{variables('SharePointFolderPath')}</li><li><b>Time:</b> @{utcNow()}</li></ul><p>Please review the document in SharePoint.</p>",
+            "emailMessage/Importance": "Normal"
+          }
+        },
+        "runAfter": {
+          "Condition_Delete_Source_File": ["Succeeded"]
+        }
+      }
+    },
+
+    "triggers": {
+      "When_a_file_is_created_in_Google_Drive": {
+        "type": "OpenApiConnection",
+        "inputs": {
+          "host": {
+            "connectionName": "shared_googledrive",
+            "operationId": "OnNewFile",
+            "apiId": "/providers/Microsoft.PowerApps/apis/shared_googledrive"
+          },
+          "parameters": {
+            "folderId": "<<GOOGLE_DRIVE_FOLDER_ID>>"
+          }
+        },
+        "recurrence": {
+          "frequency": "Minute",
+          "interval": 5
+        }
+      }
+    },
+
+    "contentVersion": "1.0.0.0"
+  },
+
+  "parameters": {
+    "$connections": {
+      "value": {
+        "shared_googledrive": {
+          "connectionId": "/subscriptions/<<SUBSCRIPTION_ID>>/resourceGroups/<<RESOURCE_GROUP>>/providers/Microsoft.Web/connections/googledrive",
+          "connectionName": "googledrive",
+          "id": "/providers/Microsoft.PowerApps/apis/shared_googledrive"
+        },
+        "shared_sharepointonline": {
+          "connectionId": "/subscriptions/<<SUBSCRIPTION_ID>>/resourceGroups/<<RESOURCE_GROUP>>/providers/Microsoft.Web/connections/sharepointonline",
+          "connectionName": "sharepointonline",
+          "id": "/providers/Microsoft.PowerApps/apis/shared_sharepointonline"
+        },
+        "shared_office365": {
+          "connectionId": "/subscriptions/<<SUBSCRIPTION_ID>>/resourceGroups/<<RESOURCE_GROUP>>/providers/Microsoft.Web/connections/office365",
+          "connectionName": "office365",
+          "id": "/providers/Microsoft.PowerApps/apis/shared_office365"
+        }
+      }
+    }
+  },
+
+  "placeholders": {
+    "<<GOOGLE_DRIVE_FOLDER_ID>>": "The ID of the Google Drive folder linked to your Google Form. Find it in the Google Drive folder URL after /folders/",
+    "<<YOUR_SHAREPOINT_SITE_URL>>": "Replace with your SharePoint site URL, e.g. https://contoso.sharepoint.com/sites/HR",
+    "<<JOB_FOLDER_NAME>>": "Replace with the job opening folder name inside the Recruitment library, e.g. 2024-Software-Engineer",
+    "<<HR_TEAM_EMAIL>>": "Replace with the HR team's email address, e.g. hr@contoso.com",
+    "<<SET_TO_true_TO_DELETE_SOURCE_FILE_AFTER_COPY>>": "Change the 'DeleteSourceFile' variable default value (line ~42) from false to true to delete the Google Drive file after it is copied to SharePoint",
+    "<<SUBSCRIPTION_ID>>": "Your Azure subscription ID (found in Azure Portal > Subscriptions)",
+    "<<RESOURCE_GROUP>>": "Your Azure resource group name"
+  }
+}
