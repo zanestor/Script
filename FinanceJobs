@@ -776,9 +776,19 @@ async def collect():
         )
 
     rows = [r for group in results for r in group]
-    if not rows:
-        print("\nNo finance roles returned. Run with --probe to check the APIs.")
     merge_and_save(rows, OUTPUT_CSV_FILE)
+
+    if not rows:
+        # Every enabled provider yielded nothing. Across several independent job
+        # boards that means the run is broken -- blocked egress, a changed schema,
+        # a rejected User-Agent -- not that the finance job market emptied out.
+        # Exiting non-zero matters under a scheduler: a silently green run that
+        # collects nothing forever is the failure nobody notices. The CSV is
+        # left untouched above, so a bad run never destroys good data.
+        print("\nNo finance roles returned from any provider. "
+              "Run with --probe to check the APIs.")
+        return 1
+    return 0
 
 
 def main():
@@ -787,7 +797,7 @@ def main():
     if "--probe" in sys.argv:
         asyncio.run(probe())
         return
-    asyncio.run(collect())
+    sys.exit(asyncio.run(collect()))
 
 
 if __name__ == "__main__":

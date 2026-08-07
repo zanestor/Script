@@ -1,0 +1,84 @@
+name: Collect finance jobs
+
+# GitHub-hosted runners have unrestricted outbound network, which is the whole
+# point of running the collector here rather than on a laptop that has to be
+# awake. The CSV is committed back to this branch, so `git pull` is the only
+# thing left to do by hand.
+on:
+  schedule:
+    # 06:15 UTC daily. Deliberately off the hour: GitHub drops scheduled runs
+    # when the top-of-hour queue is congested, and :00 is the worst offender.
+    - cron: "15 6 * * *"
+  workflow_dispatch:          # lets you trigger a run by hand from the Actions tab
+
+permissions:
+  contents: write             # required to commit the refreshed CSV back
+
+# Never let two runs race on the same CSV; a slow run must not push over a
+# newer one. Queue rather than cancel, so a scheduled run is not silently lost.
+concurrency:
+  group: finance-jobs-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out the branch this workflow runs on
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        # The repo carries no requirements.txt by convention; FinanceJobs needs
+        # only these two. Everything else it uses is stdlib.
+        run: pip install --quiet httpx pandas
+
+      - name: Run the collector
+        env:
+          JOBS_OUTPUT_CSV: finance_jobs.csv
+          # Absent secrets arrive as empty strings, which FinanceJobs reads as
+          # "provider disabled" via os.getenv. The four keyless boards run
+          # regardless, so this workflow works with no secrets configured.
+          ADZUNA_APP_ID: ${{ secrets.ADZUNA_APP_ID }}
+          ADZUNA_APP_KEY: ${{ secrets.ADZUNA_APP_KEY }}
+          RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}
+          # Folded into the User-Agent. RemoteOK rejects generic agents, and
+          # naming the source is correct etiquette on free endpoints regardless.
+          JOBS_CONTACT: "https://github.com/${{ github.repository }}"
+        # A run where every provider fails exits 1 and fails the job on purpose,
+        # so a permanently broken schedule surfaces as a red X instead of
+        # quietly collecting nothing for months.
+        run: python FinanceJobs
+
+      - name: Commit the refreshed CSV
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- finance_jobs.csv; then
+            echo "No new postings — nothing to commit."
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add finance_jobs.csv
+          git commit -m "Refresh finance job listings ($(date -u +%Y-%m-%d))"
+          # Rebase before pushing: a human may have committed to this branch
+          # between checkout and now.
+          git pull --rebase --autostash origin "${GITHUB_REF_NAME}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+
+      - name: Upload the CSV as a downloadable artifact
+        # Belt and braces: if the push above is ever rejected, the data is still
+        # retrievable from the run page rather than lost with the runner.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: finance-jobs-csv
+          path: finance_jobs.csv
+          if-no-files-found: warn
+          retention-days: 30
