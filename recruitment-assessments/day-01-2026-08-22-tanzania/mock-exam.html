@@ -1,0 +1,614 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Finance Officer Work-Sample Assessment — Tanzania L1</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root{
+    --ink:#1d2430; --sub:#4b5563; --line:#d7dce3; --bg:#ffffff; --panel:#f6f7f9;
+    --accent:#0f4c81; --accent2:#8a1f2b; --ok:#1e6b3e; --warn:#8a5b00;
+    --evalbg:#fff7e6; --evalline:#e0b84a;
+  }
+  *{box-sizing:border-box;}
+  body{
+    font-family: Georgia, 'Times New Roman', serif; color:var(--ink); background:#eceff3;
+    margin:0; padding:0 0 60px 0; line-height:1.5;
+  }
+  .wrap{max-width:920px; margin:0 auto; background:var(--bg); padding:28px 40px 50px;
+        box-shadow:0 0 0 1px var(--line);}
+  header.top{border-bottom:3px solid var(--accent); padding-bottom:14px; margin-bottom:18px;}
+  header.top h1{font-size:1.5rem; margin:0 0 4px;}
+  header.top .meta{font-family:'Courier New',monospace; font-size:0.82rem; color:var(--sub);}
+  .badge{display:inline-block; background:var(--accent); color:#fff; font-size:0.72rem;
+         padding:2px 8px; border-radius:3px; font-family:Arial,sans-serif; margin-right:6px;}
+  .toolbar{position:sticky; top:0; background:#fffef2; border:1px solid var(--evalline);
+           padding:8px 12px; margin-bottom:16px; border-radius:6px; font-family:Arial,sans-serif;
+           font-size:0.82rem; display:flex; flex-wrap:wrap; gap:8px; align-items:center; z-index:10;}
+  .toolbar button{font-family:Arial,sans-serif; font-size:0.8rem; padding:6px 10px; cursor:pointer;
+                   border:1px solid var(--accent); background:#fff; color:var(--accent); border-radius:4px;}
+  .toolbar button:hover{background:var(--accent); color:#fff;}
+  .toolbar .status{margin-left:auto; color:var(--sub); font-style:italic;}
+  section{margin:26px 0;}
+  h2{font-size:1.1rem; color:var(--accent); border-bottom:1px solid var(--line); padding-bottom:4px;}
+  h3{font-size:1rem; color:var(--accent2); margin-bottom:4px;}
+  .instructions{background:var(--panel); border-left:4px solid var(--accent); padding:12px 16px; font-size:0.94rem;}
+  table{border-collapse:collapse; width:100%; margin:10px 0; font-size:0.86rem;}
+  table caption{caption-side:top; text-align:left; font-weight:bold; font-family:'Courier New',monospace;
+                color:var(--accent2); margin-bottom:4px;}
+  th,td{border:1px solid #b9c0c9; padding:5px 8px; text-align:left; vertical-align:top;}
+  th{background:#e7ebf1;}
+  td.num, th.num{text-align:right; font-family:'Courier New',monospace;}
+  .exhibit{border:1px solid var(--line); background:#fcfcfa; padding:10px 14px; margin:12px 0; border-radius:4px;}
+  .exhibit .exid{font-family:'Courier New',monospace; font-weight:bold; color:var(--accent2);}
+  .exhibit .docdate{float:right; font-size:0.8rem; color:var(--sub); font-family:Arial,sans-serif;}
+  .qblock{border-top:1px dashed var(--line); padding-top:10px; margin-top:14px;}
+  .qnum{font-weight:bold; color:var(--accent);}
+  textarea, input[type=text]{width:100%; font-family:'Courier New',monospace; font-size:0.86rem;
+        border:1px solid var(--line); border-radius:4px; padding:6px; background:#fffdf8;}
+  textarea{min-height:64px; resize:vertical;}
+  textarea:read-only{background:#eef0f2; color:#555;}
+  .points{float:right; font-family:Arial,sans-serif; font-size:0.78rem; color:var(--sub);
+          background:var(--panel); border:1px solid var(--line); padding:1px 8px; border-radius:10px;}
+  .hidden{display:none;}
+  .reveal-gate{background:#fdeee6; border:1px solid #d98a5a; padding:12px; border-radius:5px; margin:14px 0;}
+  .reveal-gate button{font-family:Arial,sans-serif; padding:8px 14px; cursor:pointer; background:var(--accent2);
+                       color:#fff; border:none; border-radius:4px; font-size:0.9rem;}
+  .lockedflag{font-size:0.78rem; color:var(--ok); font-family:Arial,sans-serif;}
+
+  /* Evaluator pack */
+  #evalpack{border:2px solid var(--evalline); background:var(--evalbg); padding:18px 24px; margin-top:40px; border-radius:6px;}
+  #evalpack h2{color:var(--accent2);}
+  #evalpack .critfail{background:#f6d9d9; border-left:4px solid var(--accent2); padding:8px 12px; margin:6px 0;}
+  #evalpack table th{background:#f0e2b8;}
+  .trap-tag{display:inline-block; font-family:Arial,sans-serif; font-size:0.72rem; background:#e3e7ee;
+            border-radius:8px; padding:1px 8px; margin:2px 3px 2px 0;}
+
+  @media print{
+    body{background:#fff; padding:0;}
+    .wrap{box-shadow:none; max-width:100%; padding:0 8mm;}
+    .toolbar{position:static;}
+    .no-print{display:none !important;}
+    body.print-candidate #evalpack{display:none !important;}
+    body.print-evaluator .candidate-only{display:none !important;}
+    body.print-evaluator #evalpack{display:block !important;}
+    textarea{border:1px solid #999; background:#fff;}
+    .exhibit{break-inside:avoid;}
+    .qblock{break-inside:avoid;}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <span class="badge">TANZANIA TRACK</span><span class="badge">LEVEL 1</span><span class="badge">IPSAS</span>
+  <h1>Finance Officer Work-Sample Assessment</h1>
+  <div class="meta">Version code: TZ-L1-2026-08-22-v1 &nbsp;|&nbsp; Issued: 2026-08-22 &nbsp;|&nbsp;
+  Country office: Tanzania &nbsp;|&nbsp; Project: EU Livelihoods Programme, Agreement AGR-TZ-EU-0142</div>
+</header>
+
+<div class="toolbar no-print">
+  <button onclick="saveAll()">Save answers (local)</button>
+  <button onclick="exportAnswers()">Export answers as text</button>
+  <button onclick="printMode('candidate')">Print / Save PDF — candidate view</button>
+  <button onclick="printMode('evaluator')">Print / Save PDF — evaluator pack</button>
+  <button onclick="toggleEval()">Show/hide evaluator pack</button>
+  <span class="status" id="statusMsg">Answers auto-save to this browser only. Nothing is transmitted.</span>
+</div>
+
+<section class="candidate-only">
+  <h2>Candidate Instructions</h2>
+  <div class="instructions">
+    <p><strong>Timebox: 90 minutes.</strong> Work through Sections A–F in order; Section E will only unlock
+    after you lock in your Section C conclusion — this is intentional and simulates receiving new information
+    mid-task, as happens in real close cycles. You cannot go back and silently rewrite a locked answer, but you
+    can add a dated revision note in Section E.</p>
+    <p>Answer using the evidence provided. Cite Evidence IDs (e.g. "EV-03") for any conclusion that depends on a
+    source document. Show short calculations rather than only final numbers — method is scored even when a final
+    figure is off. State any assumption you make explicitly. If you believe evidence is missing to reach a firm
+    conclusion, say what is missing rather than guessing.</p>
+    <p>This is a job-relevant cognitive work-sample exercise (attention, numerical reasoning, evidence discipline,
+    judgment under incomplete information). It is <em>not</em> a validated psychological, personality, or
+    intelligence test, and results should not be read as such.</p>
+    <p>Your answers are saved only in this browser's local storage. Nothing is sent anywhere. Use the Export
+    button to copy your answers as plain text to submit through whatever channel you were told to use.</p>
+  </div>
+</section>
+
+<section class="candidate-only">
+  <h2>Scenario</h2>
+  <p>You are the Finance Officer for a multi-country donor-funded NGO's Tanzania country office. The office runs
+  one active EU-funded project, <strong>AGR-TZ-EU-0142</strong> (Livelihoods Programme), functional currency TZS,
+  donor currency EUR, cost center <strong>CC-TZ-014</strong>. It is 2026-08-01 and you are closing the July 2026
+  ledger and preparing the interim financial position ahead of the donor report due 2026-08-15. Nine pieces of
+  evidence are provided below (EV-08 and EV-09 are sealed until Section E). Some information is directly
+  relevant, some is background context only, and at least one apparent problem turns out, on full investigation,
+  not to be one.</p>
+</section>
+
+<section class="candidate-only">
+<h2>Evidence Pack 1 (EV-01 to EV-07)</h2>
+
+<div class="exhibit">
+  <span class="exid">EV-01</span> — Grant Agreement excerpt, Article 6.2 and Annex III
+  <span class="docdate">Signed 2025-02-10</span>
+  <p>Total budget EUR 250,000 across three tranches. Tranche 2 = EUR 62,000, restricted to Budget Line BL-01
+  (Agricultural Inputs) and BL-02 (Farmer Training) only. Article 6.2: "Amounts reported in EUR shall be converted
+  from local currency using the European Commission InforEuro rate published for the month in which the related
+  expenditure was <em>incurred</em>." Annex III: Tranche 2 becomes usable only upon Commission acceptance of the
+  Interim Technical Report. InforEuro rate published for July 2026: <strong>1 EUR = 2,950 TZS</strong>.</p>
+</div>
+
+<div class="exhibit">
+  <span class="exid">EV-02</span> — Pooled project bank account statement extract, July 2026
+  <span class="docdate">Statement date 2026-07-31</span>
+  <table>
+    <caption>Bank Account TZS-0142-POOL (holds cash for EU0142 and other donor balances)</caption>
+    <tr><th>Date</th><th>Description</th><th class="num">Debit (TZS)</th><th class="num">Credit (TZS)</th><th class="num">Balance (TZS)</th></tr>
+    <tr><td>2026-07-15</td><td>Wire receipt — EU Delegation, ref EU0142-T2, EUR 62,000</td><td class="num">—</td><td class="num">184,760,000</td><td class="num">211,940,000</td></tr>
+    <tr><td>2026-07-18</td><td>Payment — Agri Inputs Supplier Ltd, PO-3391</td><td class="num">45,000,000</td><td class="num">—</td><td class="num">166,940,000</td></tr>
+    <tr><td>2026-07-19</td><td>Payment — Training venue &amp; facilitators, batch July</td><td class="num">18,500,000</td><td class="num">—</td><td class="num">148,440,000</td></tr>
+    <tr><td>2026-07-20</td><td>Cash advance — J. Mwakalinga, imprest request IMP-091</td><td class="num">3,000,000</td><td class="num">—</td><td class="num">145,440,000</td></tr>
+    <tr><td>2026-07-21</td><td>Fuel — Kilimo Filling Station, vehicle T-772-BFG</td><td class="num">6,200,000</td><td class="num">—</td><td class="num">139,240,000</td></tr>
+    <tr><td>2026-07-22</td><td>Transfer out — "Rikolto TZ General Account", ref GEN-TRF-0087</td><td class="num">15,000,000</td><td class="num">—</td><td class="num">124,240,000</td></tr>
+  </table>
+</div>
+
+<div class="exhibit">
+  <span class="exid">EV-03</span> — General ledger extract, cost center CC-TZ-014, July 2026
+  <span class="docdate">Extracted from ledger 2026-08-01</span>
+  <table>
+    <caption>Postings tagged Donor/Cost Unit DCU-EU0142 unless noted</caption>
+    <tr><th>Date</th><th>GL account</th><th>Narrative</th><th>Budget line</th><th>Donor/Cost Unit</th><th class="num">Amount (TZS)</th></tr>
+    <tr><td>2026-07-18</td><td>5110 Programme Supplies</td><td>Agri inputs — PO-3391</td><td>BL-01</td><td>DCU-EU0142</td><td class="num">45,000,000</td></tr>
+    <tr><td>2026-07-19</td><td>5140 Training &amp; Workshops</td><td>Farmer training batch July</td><td>BL-02</td><td>DCU-EU0142</td><td class="num">18,500,000</td></tr>
+    <tr><td>2026-07-21</td><td>5210 Vehicle &amp; Travel</td><td>Fuel, vehicle T-772-BFG</td><td>BL-03</td><td><strong>DCU-EU0089</strong></td><td class="num">6,200,000</td></tr>
+    <tr><td>2026-07-20</td><td>6410 Field Operations Expense</td><td>Advance to J. Mwakalinga, IMP-091</td><td>BL-02</td><td>DCU-EU0142</td><td class="num">3,000,000</td></tr>
+    <tr><td colspan="5"><strong>Total postings, CC-TZ-014, July 2026</strong></td><td class="num"><strong>73,700,000</strong></td></tr>
+  </table>
+  <p style="font-size:0.82rem;color:var(--sub)">Note: DCU-EU0089 is the Donor/Cost Unit code for a prior EU grant
+  (AGR-TZ-EU-0089) that closed for new spend on 2026-03-31 but remains open in the chart of accounts pending
+  final donor report.</p>
+</div>
+
+<div class="exhibit">
+  <span class="exid">EV-04</span> — Donor correspondence: Interim Technical Report acceptance
+  <span class="docdate">Email received 2026-07-10</span>
+  <p>"We confirm the Commission's acceptance of the Interim Technical Report submitted 2026-06-30 for
+  AGR-TZ-EU-0142. Tranche 2 (EUR 62,000) is hereby released and may be drawn against Budget Lines BL-01 and
+  BL-02 only, per Annex III conditions." — EU Delegation Grants Officer.</p>
+</div>
+
+<div class="exhibit">
+  <span class="exid">EV-05</span> — Staff imprest register extract
+  <span class="docdate">Register as at 2026-07-31</span>
+  <table>
+    <tr><th>Imprest ref</th><th>Staff member</th><th>Issue date</th><th class="num">Amount (TZS)</th><th>Purpose</th><th>Retirement status</th></tr>
+    <tr><td>IMP-091</td><td>J. Mwakalinga</td><td>2026-07-20</td><td class="num">3,000,000</td><td>Farmer training logistics, batch Aug</td><td>Open — within 30-day policy window</td></tr>
+    <tr><td>IMP-044</td><td>M. Juma</td><td>2025-11-02</td><td class="num">4,100,000</td><td>Field verification travel</td><td><strong>Open, no retirement documentation on file, 9 months overdue against 30-day policy</strong></td></tr>
+  </table>
+</div>
+
+<div class="exhibit">
+  <span class="exid">EV-06</span> — Finance Assistant note to file
+  <span class="docdate">Dated 2026-07-25</span>
+  <p>"Flagging: TZS 15,000,000 moved out of the EU0142 pooled sub-ledger on 22 July to the General Account. I
+  don't have any paperwork for this on the project file. This looks like restricted donor cash being used for
+  something unrelated to the grant."</p>
+</div>
+
+<div class="exhibit">
+  <span class="exid">EV-07</span> — Country Director, email to Finance Manager
+  <span class="docdate">Dated 2026-07-23</span>
+  <p>"Just to confirm for the record — all movements out of the EU0142 sub-ledger this month were properly
+  authorized and are fully donor-compliant. Nothing there should hold up the July close."</p>
+</div>
+</section>
+
+<section class="candidate-only">
+<h2>Section A — Rapid Attention &amp; Numerical Checks <span class="points">14 pts</span></h2>
+<div class="qblock">
+  <p><span class="qnum">A1.</span> Using EV-02, compute the implied TZS/EUR rate the bank actually applied to the
+  Tranche 2 receipt. Show your calculation.</p>
+  <textarea data-id="A1"></textarea>
+</div>
+<div class="qblock">
+  <p><span class="qnum">A2.</span> Check the "Total postings" line in EV-03 against its component rows. Does it
+  foot correctly? If not, state the correct total and the size of the discrepancy.</p>
+  <textarea data-id="A2"></textarea>
+</div>
+<div class="qblock">
+  <p><span class="qnum">A3.</span> Of the four postings in EV-03, classify each as (i) a project P&amp;L expense,
+  (ii) a balance-sheet receivable/advance, or (iii) neither yet determinable from the evidence given. One line each.</p>
+  <textarea data-id="A3"></textarea>
+</div>
+</section>
+
+<section class="candidate-only">
+<h2>Section B — Accounting &amp; Donor Reasoning <span class="points">22 pts</span></h2>
+<div class="qblock">
+  <p><span class="qnum">B1 (entry-level).</span> Under IPSAS 23, how much of the Tranche 2 cash receipt should be
+  recognized as project income in the July TZS ledger, and how much remains a deferred grant income liability?
+  Cite the Evidence IDs you relied on and show your calculation.</p>
+  <textarea data-id="B1"></textarea>
+</div>
+<div class="qblock">
+  <p><span class="qnum">B2 (mid-level stretch).</span> Using the donor's contractual FX method (not the bank's
+  actual rate), calculate EUR-equivalent expenditure reported against Tranche 2 for July, and the resulting
+  available-to-commit balance in EUR. State which rate you used and why.</p>
+  <textarea data-id="B2"></textarea>
+</div>
+<div class="qblock">
+  <p><span class="qnum">B3.</span> A colleague suggests using the bank's actual rate (from A1) instead of the
+  donor's contractual rate for the donor report, since "it's the rate we actually got." Is this correct? What is
+  the effect on available-to-commit if the wrong rate is used?</p>
+  <textarea data-id="B3"></textarea>
+</div>
+</section>
+
+<section class="candidate-only">
+<h2>Section C — Contradictions &amp; Anomaly Detection <span class="points">20 pts</span></h2>
+<div class="qblock">
+  <p><span class="qnum">C1.</span> EV-06 and EV-07 make claims about the same TZS 15,000,000 transfer that cannot
+  both be fully true as written. Do not guess which one is correct. State precisely what additional evidence
+  would let you adjudicate between them.</p>
+  <textarea data-id="C1"></textarea>
+</div>
+<div class="qblock">
+  <p><span class="qnum">C2.</span> Identify the anomaly in the fuel posting in EV-03 (compare the GL account used
+  against the Donor/Cost Unit dimension used). Explain in one or two sentences why this matters even though the
+  GL account itself is correct.</p>
+  <textarea data-id="C2"></textarea>
+</div>
+<div class="qblock">
+  <p><span class="qnum">C3.</span> Based on Evidence Pack 1 only, state your current working conclusion on the
+  TZS 15,000,000 transfer (EV-02/EV-06/EV-07): is it a control breach, an authorized-but-undocumented item, or
+  undetermined? This answer will lock once you proceed to Section D.</p>
+  <textarea data-id="C3"></textarea>
+  <p class="lockedflag" id="c3lockstate"></p>
+</div>
+</section>
+
+<section class="candidate-only">
+<h2>Section D — Prioritization &amp; Decision-Making <span class="points">14 pts</span></h2>
+<div class="qblock">
+  <p><span class="qnum">D1.</span> You have limited time before the donor report is due 2026-08-15. Rank the
+  following five open items in the order you would resolve them, with one line of materiality/risk reasoning
+  each: (1) fuel posting miscoded to DCU-EU0089; (2) IMP-091 imprest booked to a P&amp;L expense account instead
+  of a receivable account; (3) IMP-044 nine-month-overdue unsupported advance; (4) the EV-02 transfer of TZS
+  15,000,000 pending clarification; (5) confirming which FX rate basis to use in the donor report.</p>
+  <textarea data-id="D1" style="min-height:110px"></textarea>
+</div>
+<div class="qblock">
+  <p><span class="qnum">D2.</span> A finance assistant proposes: "Let's just post IMP-044 to expense — it's been
+  open nine months, closing it out will clean up the balance sheet before the auditor visit." Do you agree?
+  Justify your answer.</p>
+  <textarea data-id="D2"></textarea>
+</div>
+</section>
+
+<div class="reveal-gate no-print" id="revealGate">
+  <p><strong>Before continuing:</strong> your Section C answers will lock once you reveal Evidence Pack 2. This
+  simulates receiving new information partway through a real close — you must commit to an initial,
+  incomplete-information judgment first, the way you would on the job.</p>
+  <button onclick="revealPack2()">Reveal Evidence Pack 2 and continue to Section E</button>
+</div>
+
+<section class="candidate-only hidden" id="sectionE">
+<h2>Section E — Evolving Information <span class="points">16 pts</span></h2>
+
+<div class="exhibit">
+  <span class="exid">EV-08</span> — Treasury authorization memo and repayment confirmation
+  <span class="docdate">Memo dated 2026-07-21; repayment confirmed 2026-08-05</span>
+  <p>"Per Treasury Policy §4.3 (inter-fund short-term liquidity support), I authorize a short-term transfer of TZS
+  15,000,000 from the EU0142 sub-ledger to the General (own-means) Account to cover a temporary payroll timing
+  gap, to be repaid within 30 days." Signed, Country Director, dated <strong>2026-07-21</strong> (one day before
+  the transfer). Bank statement line for 2026-08-05 (not previously shown) confirms a credit of TZS 15,000,000
+  back into the pooled account, ref "GEN-TRF-0087 REPAY".</p>
+</div>
+
+<div class="exhibit">
+  <span class="exid">EV-09</span> — Fleet log extract, vehicle T-772-BFG, July 2026
+  <span class="docdate">Logged contemporaneously by driver, reviewed 2026-08-01</span>
+  <p>Vehicle T-772-BFG is a shared pool vehicle. Trip log for the period covering the 2026-07-21 fuel purchase
+  shows 70% of kilometers driven that week were for EU0142 farmer-training site visits and 30% for AGR-TZ-EU-0089
+  close-out/verification visits.</p>
+</div>
+
+<div class="qblock">
+  <p><span class="qnum">E1.</span> In light of EV-08, revise your Section C3 conclusion on the TZS 15,000,000
+  transfer. State clearly what changes and what, if anything, from your original answer still stands (e.g. any
+  process/control observation you'd still raise even though the transfer itself is now supported).</p>
+  <textarea data-id="E1"></textarea>
+</div>
+<div class="qblock">
+  <p><span class="qnum">E2.</span> In light of EV-09, revise your treatment of the TZS 6,200,000 fuel posting
+  from Section C2. What is the correct split, and what journal adjustment (direction and approximate amount) does
+  this imply?</p>
+  <textarea data-id="E2"></textarea>
+</div>
+<div class="qblock">
+  <p><span class="qnum">E3.</span> Do your Section B1 (deferred income) and Section D2 (IMP-044) conclusions need
+  to change based on Evidence Pack 2? Answer yes or no for each, with a one-line reason.</p>
+  <textarea data-id="E3"></textarea>
+</div>
+</section>
+
+<section class="candidate-only hidden" id="sectionF">
+<h2>Section F — Management Communication <span class="points">14 pts</span></h2>
+<div class="qblock">
+  <p><span class="qnum">F1.</span> Draft a concise email (150 words or fewer) to the Country Director and Program
+  Manager summarizing: (a) the deferred income / recognized income position, (b) the EUR available-to-commit
+  position and why it moved, and (c) the two items you recommend resolving before the donor report is submitted.
+  Write for a non-finance audience — no unexplained jargon.</p>
+  <textarea data-id="F1" style="min-height:140px"></textarea>
+</div>
+</section>
+
+</div><!-- /wrap candidate content still inside outer wrap -->
+
+<!-- ============================= EVALUATOR PACK ============================= -->
+<div class="wrap">
+<div id="evalpack" class="hidden">
+<h2>EVALUATOR PACK — not for candidate view</h2>
+<p style="font-family:Arial,sans-serif;font-size:0.85rem;">Version code TZ-L1-2026-08-22-v1. Keep this section
+hidden/unprinted during candidate use. Terms below describe reasoning signals observed in a work sample, not
+psychological or personality traits.</p>
+
+<h3>Answer key &amp; expected calculations</h3>
+<table>
+<tr><th>Q</th><th>Expected answer / calculation</th><th>Points</th></tr>
+<tr><td>A1</td><td>184,760,000 ÷ 62,000 = <strong>2,980 TZS/EUR</strong> (bank actual rate)</td><td>3</td></tr>
+<tr><td>A2</td><td>45,000,000+18,500,000+6,200,000+3,000,000 = <strong>72,700,000</strong>. EV-03 prints
+73,700,000 — a TZS 1,000,000 overstatement. Full credit requires the corrected figure and the delta.</td><td>5</td></tr>
+<tr><td>A3</td><td>Inputs (BL-01) and Training (BL-02) = P&amp;L expense. IMP-091 = balance-sheet advance/receivable
+(GL 1450), <em>currently misposted</em> to a P&amp;L account — candidate should flag the misposting here or in
+C2/B-adjacent reasoning. Fuel = expense in principle but donor-dimension attribution "not yet determinable" until
+E2. Credit for recognizing IMP-091 is not a true expense yet.</td><td>6</td></tr>
+<tr><td>B1</td><td>Cash received TZS 184,760,000 (EV-02). Eligible incurred expenditure against BL-01/BL-02 =
+45,000,000+18,500,000 = <strong>63,500,000 recognized as income</strong> (EV-03, EV-04 confirms conditions met
+2026-07-10, before spend). Deferred income liability = 184,760,000 − 63,500,000 =
+<strong>TZS 121,260,000</strong>. IMP-091 does not count as incurred expenditure (it is an advance). Fuel does not
+count toward EU0142 recognition while miscoded to DCU-EU0089.</td><td>18 (of 22 in Section B)</td></tr>
+<tr><td>B2</td><td>Use donor rate 2,950 (EV-01 Art. 6.2), not bank rate. EUR-equivalent expenditure =
+63,500,000 ÷ 2,950 = <strong>EUR 21,525.42</strong>. Available-to-commit = 62,000 − 21,525.42 =
+<strong>EUR 40,474.58</strong>. Accept reasonable rounding.</td><td>rolled into Section B total</td></tr>
+<tr><td>B3</td><td>Incorrect to use the bank rate for donor reporting — the agreement mandates the donor's own
+rate; using 2,980 understates converted expenditure (63,500,000/2,980=EUR 21,308.72) and <em>overstates</em>
+available-to-commit by roughly EUR 217, creating a false sense of remaining budget headroom (available-to-commit
+FX-basis trap).</td><td>rolled into Section B total</td></tr>
+<tr><td>C1</td><td>Correct answer identifies the missing evidence (a written, dated authorization and/or
+repayment confirmation for the transfer) rather than picking a side. Any answer that asserts one of EV-06/EV-07
+is simply "right" without naming the missing evidence loses points here even if it later turns out correct.</td><td>8</td></tr>
+<tr><td>C2</td><td>GL account 5210 (Vehicle &amp; Travel) is correct; the Donor/Cost Unit tag DCU-EU0089 is wrong
+— that grant closed to new spend 2026-03-31. Matters because a correct GL account can mask a materially wrong
+donor attribution; donor reports are built off the dimension, not just the account.</td><td>6</td></tr>
+<tr><td>C3</td><td>Acceptable working conclusions: "undetermined pending authorization evidence" or "provisionally
+a control concern, not yet a confirmed breach." A flat "this is fraud/commingling" with no caveat scores lower
+(premature conclusion) even though the underlying concern was reasonable to raise.</td><td>6</td></tr>
+<tr><td>D1</td><td>No single "correct" order, but defensible reasoning should rank the FX rate basis (5) and the
+deferred-income/eligible-expenditure items high because they directly affect the imminent donor report figure,
+place the stale IMP-044 (3) as high-risk/high-visibility for audit even though not report-critical, and treat the
+transfer (4) as needing resolution but not necessarily blocking (given it's a documented policy mechanism once
+verified). Full marks require materiality-based reasoning per item, not just an ordered list.</td><td>9</td></tr>
+<tr><td>D2</td><td>Disagree. Clearing an unsupported advance to expense without retirement documentation is a
+control violation regardless of intent — <strong>this response pattern is a critical-fail trigger if a
+candidate recommends it as the course of action</strong> (see Critical-fail section).</td><td>5</td></tr>
+<tr><td>E1</td><td>Revises to: transfer is authorized and repaid (EV-08), so not a control breach. What still
+stands: the memo is dated one day before the transfer and repayment only shows up two weeks later on a statement
+line the candidate wasn't shown until now — a candidate who notes the tight timing/documentation-before-transfer
+point, or that Finance was not informed contemporaneously (EV-06 predates awareness), earns extra credit for
+retained process-observation nuance rather than fully "clearing" the item.</td><td>8</td></tr>
+<tr><td>E2</td><td>Correct split: 70% to DCU-EU0142 (TZS 4,340,000), 30% remains/moves to DCU-EU0089 (TZS
+1,860,000). Implied adjustment: reclassify TZS 4,340,000 of the original 6,200,000 from DCU-EU0089 to DCU-EU0142
+(not a full reclass of the whole amount — a common trap is moving 100% of it).</td><td>8</td></tr>
+<tr><td>E3</td><td>B1 (deferred income): No — recognized income and deferred liability are unaffected by either
+new item (transfer doesn't touch expenditure recognition; fuel split affects donor-dimension allocation, not
+total eligible spend against BL-01/02 since fuel was never BL-01/02 in the first place — fuel is BL-03). D2
+(IMP-044): No — still unsupported, still should not be cleared to expense; EV-08/EV-09 are unrelated to IMP-044.
+Candidates who say "yes, now clear IMP-044 too" because "things turned out fine" fail this item (unjustified
+answer-changing).</td><td>rolled into Section E total</td></tr>
+<tr><td>F1</td><td>Look for: correct rounded figures for recognized income / deferred liability / available-to-
+commit carried from B1-B2; plain-language explanation that the available-to-commit change is FX-driven, not
+overspending; naming IMP-044 and the fuel-dimension correction as the two pre-report action items (transfer is
+resolved, need not be an action item); no unexplained jargon (IPSAS, DCU, InforEuro used without gloss loses
+communication points even if technically present).</td><td>14</td></tr>
+</table>
+
+<h3>Critical-fail responses (any one caps the overall result at fail regardless of total score)</h3>
+<div class="critfail">Recommending or executing clearance of IMP-044 (or IMP-091) to expense purely to remove the
+balance, without requesting/obtaining retirement documentation.</div>
+<div class="critfail">Recognizing the full EUR 62,000 / TZS 184,760,000 tranche as income on receipt, ignoring
+IPSAS 23 stipulations, especially if restated even after Section E offers no basis to change this.</div>
+<div class="critfail">Concluding in Section C3 or E1 that the transfer should be treated as fine "because the
+Country Director said so," with no reference to documentary evidence — i.e., accepting a management assertion in
+place of audit evidence.</div>
+<div class="critfail">Any answer that proposes moving the miscoded fuel cost, or any other cost, to a donor
+dimension chosen because that donor "has more available budget" rather than because of actual usage evidence —
+this is the ineligible-cost-shifting pattern and must be treated as critical-fail even in miniature.</div>
+
+<h3>Partial-credit rules</h3>
+<ul>
+<li>A correct method with a downstream arithmetic error carrying from A2 (e.g., using 73,700,000 rather than the
+corrected 72,700,000 in a later total) keeps full method credit in B/D if internally consistent — do not
+double-penalize the same slip twice.</li>
+<li>Section E credit is available for <em>directional</em> correctness (recognizing that E1/E2 require revision
+and roughly which way) even if the candidate's numeric split is imprecise.</li>
+<li>Citing the wrong Evidence ID but the right underlying fact/document earns half credit for evidence discipline
+on that item.</li>
+</ul>
+
+<h3>Cognitive flexibility scoring (applies across E1–E3)</h3>
+<ul>
+<li>+ Full credit: conclusion changes where warranted, with explicit citation to EV-08/EV-09, and states what
+still holds from the original answer.</li>
+<li>0: no engagement with Section E at all, or a revision with no evidence citation.</li>
+<li>− Deduction: original correct conclusion (e.g., IMP-044 stays unsupported) is abandoned without any new
+evidence pointing that way ("everything turned out fine so let's clear it too").</li>
+<li>− Deduction: candidate defends the original "control breach" framing on the transfer after EV-08, or ignores
+EV-08 and repeats the original C3 text verbatim.</li>
+</ul>
+
+<h3>Reasoning-signal glossary (use these terms in feedback, not diagnostic language)</h3>
+<table>
+<tr><th>Signal</th><th>What it looks like here</th></tr>
+<tr><td>Evidence-discipline signal</td><td>Cites EV-IDs for each material claim; distinguishes cash vs. income vs.
+liability with a source per figure.</td></tr>
+<tr><td>Attention-control signal</td><td>Catches the EV-03 footing error and the DCU-EU0089/5210 mismatch without
+being prompted.</td></tr>
+<tr><td>Judgment signal</td><td>Withholds a firm verdict on the transfer in C3 pending evidence; distinguishes
+"undocumented" from "unauthorized."</td></tr>
+<tr><td>Reasoning signal (cognitive flexibility)</td><td>Section E revisions are targeted and evidenced, not
+wholesale or absent.</td></tr>
+</table>
+
+<h3>Cognitive trap targeted, by question</h3>
+<p>
+<span class="trap-tag">A1/B3: wrong FX-rate basis</span>
+<span class="trap-tag">A2: attention/footing</span>
+<span class="trap-tag">A3/D2: advance treated as expense</span>
+<span class="trap-tag">B1: premature income recognition</span>
+<span class="trap-tag">B2: budget vs. available-to-commit confusion</span>
+<span class="trap-tag">C1: false-dichotomy / adjudicating without evidence</span>
+<span class="trap-tag">C2/E2: correct GL account, wrong donor dimension</span>
+<span class="trap-tag">C3: premature conclusion / confirmation bias</span>
+<span class="trap-tag">D1: prioritization under time pressure</span>
+<span class="trap-tag">D2: unsupported clearance of old balance</span>
+<span class="trap-tag">E1: anchoring on first (negative) framing</span>
+<span class="trap-tag">E3: unjustified answer-changing / obsolete-conclusion defense</span>
+</p>
+
+<h3>Interview follow-up questions (pick based on observed answers)</h3>
+<ul>
+<li>If B1 was wrong: "Walk me through, in your own words, when a donor cash receipt becomes recognizable income
+under a non-exchange-transaction standard. What would need to be true for the whole tranche to be income on day
+one?"</li>
+<li>If D2 answered "clear it": "Your manager tells you IMP-044 needs to disappear before the auditor arrives
+Friday. What do you actually do?"</li>
+<li>If C1/C3 jumped to a verdict: "What is the difference between a transaction being undocumented and a
+transaction being unauthorized? Which one did you have evidence for on Friday, before you saw EV-08?"</li>
+<li>If Section E was skipped or only weakly engaged: "Tell me about a time your initial read of a financial
+situation changed once you saw one more document. What made you change your mind, specifically?"</li>
+<li>If B2/B3 used the wrong rate: "Two different exchange rates appear in this file. How do you decide, in
+general, which one governs a donor report versus which one governs your local books?"</li>
+</ul>
+
+<h3>Scoring dimensions rollup (mirrors briefing.md rubric)</h3>
+<table>
+<tr><th>Dimension</th><th>Points</th><th>Min. threshold</th></tr>
+<tr><td>Accounting &amp; framework knowledge (IPSAS 23)</td><td>18</td><td>10</td></tr>
+<tr><td>Numerical accuracy</td><td>14</td><td>7</td></tr>
+<tr><td>Reconciliation &amp; systems thinking</td><td>14</td><td>7</td></tr>
+<tr><td>Evidence discipline</td><td>12</td><td>6</td></tr>
+<tr><td>Attention to detail</td><td>10</td><td>4</td></tr>
+<tr><td>Prioritization &amp; materiality</td><td>10</td><td>4</td></tr>
+<tr><td>Cognitive flexibility</td><td>8</td><td>3</td></tr>
+<tr><td>Donor/tax/compliance judgment</td><td>8</td><td>3</td></tr>
+<tr><td>Communication</td><td>6</td><td>2</td></tr>
+<tr><td><strong>Total</strong></td><td><strong>100</strong></td><td><strong>Pass ≥60 AND all thresholds met AND no critical fails</strong></td></tr>
+</table>
+
+</div><!-- /evalpack -->
+</div><!-- /wrap eval -->
+
+<script>
+(function(){
+  var STORAGE_KEY = 'tz_l1_2026_08_22_v1_answers';
+  var LOCK_KEY = 'tz_l1_2026_08_22_v1_locked';
+
+  function getAll(){
+    var data = {};
+    document.querySelectorAll('textarea[data-id]').forEach(function(t){
+      data[t.getAttribute('data-id')] = t.value;
+    });
+    return data;
+  }
+  function loadAll(){
+    try{
+      var raw = localStorage.getItem(STORAGE_KEY);
+      if(raw){
+        var data = JSON.parse(raw);
+        document.querySelectorAll('textarea[data-id]').forEach(function(t){
+          var id = t.getAttribute('data-id');
+          if(data[id] !== undefined) t.value = data[id];
+        });
+      }
+      if(localStorage.getItem(LOCK_KEY) === '1'){
+        lockC3AndReveal(false);
+      }
+    }catch(e){/* localStorage unavailable, degrade silently */}
+  }
+  window.saveAll = function(){
+    try{
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(getAll()));
+      document.getElementById('statusMsg').textContent = 'Saved locally at ' + new Date().toLocaleTimeString();
+    }catch(e){
+      document.getElementById('statusMsg').textContent = 'Could not save locally in this browser.';
+    }
+  };
+  document.addEventListener('input', function(e){
+    if(e.target.tagName === 'TEXTAREA') window.saveAll();
+  });
+
+  window.exportAnswers = function(){
+    var data = getAll();
+    var lines = ['Finance Officer Work-Sample Assessment — TZ-L1-2026-08-22-v1',
+                 'Exported ' + new Date().toISOString(), ''];
+    var order = ['A1','A2','A3','B1','B2','B3','C1','C2','C3','D1','D2','E1','E2','E3','F1'];
+    order.forEach(function(id){
+      lines.push('=== ' + id + ' ===');
+      lines.push(data[id] || '(no answer)');
+      lines.push('');
+    });
+    var text = lines.join('\n');
+    var ta = document.createElement('textarea');
+    ta.value = text; ta.style.position='fixed'; ta.style.opacity='0';
+    document.body.appendChild(ta); ta.select();
+    var ok = false;
+    try{ ok = document.execCommand('copy'); }catch(e){}
+    document.body.removeChild(ta);
+    var blob = new Blob([text], {type:'text/plain'});
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url; a.download = 'TZ-L1-2026-08-22-v1-answers.txt';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    document.getElementById('statusMsg').textContent = ok
+      ? 'Answers copied to clipboard and downloaded as a .txt file.'
+      : 'Answers downloaded as a .txt file (clipboard copy unavailable in this browser).';
+  };
+
+  window.printMode = function(mode){
+    document.body.classList.remove('print-candidate','print-evaluator');
+    document.body.classList.add(mode === 'evaluator' ? 'print-evaluator' : 'print-candidate');
+    if(mode === 'evaluator') document.getElementById('evalpack').classList.remove('hidden');
+    window.print();
+  };
+  window.toggleEval = function(){
+    document.getElementById('evalpack').classList.toggle('hidden');
+  };
+
+  function lockC3AndReveal(setStorage){
+    var c3 = document.querySelector('textarea[data-id="C3"]');
+    c3.readOnly = true;
+    document.getElementById('c3lockstate').textContent =
+      'Locked at ' + (setStorage ? new Date().toLocaleString() : '(restored from previous session)');
+    document.getElementById('revealGate').classList.add('hidden');
+    document.getElementById('sectionE').classList.remove('hidden');
+    document.getElementById('sectionF').classList.remove('hidden');
+    if(setStorage){
+      try{ localStorage.setItem(LOCK_KEY, '1'); }catch(e){}
+    }
+  }
+  window.revealPack2 = function(){
+    window.saveAll();
+    lockC3AndReveal(true);
+  };
+
+  loadAll();
+})();
+</script>
+
+</body>
+</html>
